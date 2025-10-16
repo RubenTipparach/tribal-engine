@@ -26,8 +26,8 @@ impl Default for SkyboxConfig {
             star_brightness: 3.0,
             nebula_primary_color: Vec3::new(0.1, 0.2, 0.4),
             nebula_secondary_color: Vec3::new(0.6, 0.3, 0.8),
-            nebula_intensity: 0.3,
-            background_brightness: 0.02,
+            nebula_intensity: 1.0,
+            background_brightness: 0.00,
         }
     }
 }
@@ -115,12 +115,12 @@ impl Game {
     pub fn get_view_matrix(&self) -> Mat4 {
         self.camera.view_matrix()
     }
-
+    
     /// Get the current time for shader effects
     pub fn get_time(&self) -> f32 {
         self.time
     }
-
+    
     /// Get camera position for shaders
     pub fn get_camera_position(&self) -> Vec3 {
         self.camera.position()
@@ -140,25 +140,25 @@ impl Game {
         let forward = self.ship_rotation * Vec3::NEG_Z;
         self.ship_velocity += forward * amount;
     }
-
+    
     pub fn add_rotation(&mut self, pitch: f32, yaw: f32, roll: f32) {
         self.ship_angular_velocity.x += pitch;
         self.ship_angular_velocity.y += yaw;
         self.ship_angular_velocity.z += roll;
     }
-
+    
     pub fn rotate_camera(&mut self, pitch_delta: f32, yaw_delta: f32) {
         self.camera.rotate(pitch_delta, yaw_delta);
     }
-
+    
     pub fn move_camera_forward(&mut self, amount: f32) {
         self.camera.move_forward(amount);
     }
-
+    
     pub fn move_camera_right(&mut self, amount: f32) {
         self.camera.move_right(amount);
     }
-
+    
     pub fn roll_camera(&mut self, amount: f32) {
         self.camera.roll(amount);
     }

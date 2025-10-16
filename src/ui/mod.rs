@@ -70,6 +70,9 @@ impl UiManager {
                     .color_picker("Light Color", &mut config.light_color)
                     .slider_f32("Light Intensity", &mut config.light_intensity, 0.0, 0.1)
 
+                    .header("Distance")
+                    .slider_f32("Max Distance", &mut config.max_distance, 1.0, 50.0)
+
                     .separator()
                     .button("Reset to Default", || {
                         game.nebula_config = NebulaConfig::default();

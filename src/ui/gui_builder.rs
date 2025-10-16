@@ -37,6 +37,7 @@ impl<'a> GuiPanelBuilder<'a> {
             .window(self.title)
             .size(self.size, imgui::Condition::FirstUseEver)
             .position(self.position, imgui::Condition::FirstUseEver)
+            .collapsed(true, imgui::Condition::FirstUseEver)
             .build(|| {
                 let mut content = GuiContentBuilder::new(self.ui);
                 f(&mut content);

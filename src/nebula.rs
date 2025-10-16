@@ -19,6 +19,9 @@ pub struct NebulaConfig {
     // Light parameters
     pub light_color: Vec3,
     pub light_intensity: f32,
+
+    // Raymarch distance
+    pub max_distance: f32,
 }
 
 impl Default for NebulaConfig {
@@ -27,18 +30,21 @@ impl Default for NebulaConfig {
             // Basic parameters (keep existing defaults)
             zoom: 0.01,
             density: 2.0,
-            brightness: 2.0,
-            scale: 3.0,
-
+            brightness: 1.0,
+            scale: 20.0,
+            
             // Color parameters (from shader defaults)
             color_center: Vec3::new(0.8, 1.0, 1.0) * 7.0,
             color_edge: Vec3::new(0.48, 0.53, 0.5) * 1.5,
             color_density_low: Vec3::new(1.0, 0.9, 0.8),
             color_density_high: Vec3::new(0.4, 0.15, 0.1),
-
+            
             // Light parameters (from shader)
             light_color: Vec3::new(1.0, 0.5, 0.25),
             light_intensity: 1.0 / 30.0,
+
+            // Raymarch distance - default to 10.0 (original shader value)
+            max_distance: 10.0,
         }
     }
 }
@@ -58,7 +64,7 @@ pub struct NebulaUniformBufferObject {
     pub density: f32,
     pub brightness: f32,
     pub scale: f32,
-
+    
     // Color parameters
     pub color_center: Vec3,
     pub _padding1: f32,
@@ -68,10 +74,14 @@ pub struct NebulaUniformBufferObject {
     pub _padding3: f32,
     pub color_density_high: Vec3,
     pub _padding4: f32,
-
+    
     // Light parameters
     pub light_color: Vec3,
     pub light_intensity: f32,
+
+    // Raymarch distance
+    pub max_distance: f32,
+    pub _padding5: [f32; 3],
 }
 
 /// Nebula renderer managing all nebula-related Vulkan resources
@@ -108,7 +118,7 @@ impl NebulaRenderer {
             density: config.density,
             brightness: config.brightness,
             scale: config.scale,
-
+            
             // Color parameters
             color_center: config.color_center,
             _padding1: 0.0,
@@ -118,10 +128,14 @@ impl NebulaRenderer {
             _padding3: 0.0,
             color_density_high: config.color_density_high,
             _padding4: 0.0,
-
+            
             // Light parameters
             light_color: config.light_color,
             light_intensity: config.light_intensity,
+
+            // Raymarch distance
+            max_distance: config.max_distance,
+            _padding5: [0.0; 3],
         }
     }
     

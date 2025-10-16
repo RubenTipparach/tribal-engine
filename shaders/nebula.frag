@@ -29,6 +29,10 @@ layout(binding = 0) uniform UniformBufferObject {
     // Light parameters
     vec3 light_color;
     float light_intensity;
+
+    // Raymarch distance
+    float max_distance;
+    vec3 _padding5;
 } ubo;
 
 layout(binding = 1) uniform sampler2D depthTexture;
@@ -192,11 +196,11 @@ void main() {
             float raymarch_depth = clipPos.z / clipPos.w;
 
             // If we've passed the geometry, stop raymarching
-            if (raymarch_depth >= scene_depth) {
+            if (scene_depth < 1.0 && raymarch_depth >= scene_depth) {
                 break;
             }
 
-            if (td > 0.9 * ubo.density || d < 0.1 * t || t > 10.0 || sum.a > 0.99 || t > max_dist)
+            if (td > 0.9 * ubo.density || d < 0.1 * t || t > ubo.max_distance || sum.a > 0.99 || t > max_dist)
                 break;
 
             float d = map(pos);
