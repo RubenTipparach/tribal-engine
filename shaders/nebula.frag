@@ -167,6 +167,9 @@ void main() {
     vec2 seed = inUV + fract(ubo.time);
     #endif
 
+    // Sample depth buffer once before raymarch
+    float scene_depth = texture(depthTexture, inUV).r;
+
     float ld = 0.0, td = 0.0, w = 0.0;
     float d = 1.0, t = 0.0;
     const float h = 0.1;
@@ -180,6 +183,18 @@ void main() {
         // Raymarch loop - sample the volumetric nebula
         for (int i = 0; i < 56; i++) {
             vec3 pos = ro + t * rd;
+
+            // Check if we've reached geometry depth
+            // Linearize both depths for comparison
+            // We need to convert raymarch distance to depth buffer value
+            // Project current raymarch position to clip space
+            vec4 clipPos = ubo.proj * ubo.view * vec4(pos * ubo.scale, 1.0);
+            float raymarch_depth = clipPos.z / clipPos.w;
+
+            // If we've passed the geometry, stop raymarching
+            if (raymarch_depth >= scene_depth) {
+                break;
+            }
 
             if (td > 0.9 * ubo.density || d < 0.1 * t || t > 10.0 || sum.a > 0.99 || t > max_dist)
                 break;
@@ -229,26 +244,6 @@ void main() {
         sum.xyz += starbg;
     }
     #endif
-
-    // Proper depth integration: compute depth of the raymarched volume
-    // and compare with rasterized geometry depth
-
-    // Sample the rasterized depth buffer
-    float scene_depth = texture(depthTexture, inUV).r;
-
-    // Compute the depth of our raymarched endpoint in NDC space
-    // Use the final raymarch position (ro + t * rd) converted to world space
-    vec3 raymarch_end_world = ubo.viewPos + t * rd;
-    vec4 raymarch_clip = ubo.proj * ubo.view * vec4(raymarch_end_world, 1.0);
-    float raymarch_depth = (raymarch_clip.z / raymarch_clip.w) * 0.5 + 0.5;
-
-    // If there's solid geometry at this pixel and it's closer than our raymarch endpoint,
-    // the geometry occludes the nebula
-    const float FAR_PLANE = 0.99;
-    if (scene_depth < FAR_PLANE && scene_depth < raymarch_depth) {
-        // Solid geometry is in front of the nebula volume - discard nebula
-        sum = vec4(0.0);
-    }
 
     outColor = vec4(sum.xyz, sum.a);
 }
