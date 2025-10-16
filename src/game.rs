@@ -1,6 +1,6 @@
 use glam::{Mat4, Quat, Vec3};
 use crate::nebula::NebulaConfig;
-use crate::camera::Camera;
+use crate::core::Camera;
 
 /// Skybox configuration
 #[derive(Clone)]

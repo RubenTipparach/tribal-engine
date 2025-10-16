@@ -1,3 +1,4 @@
+mod core;
 mod engine;
 mod renderer;
 mod mesh;
@@ -7,7 +8,6 @@ mod imgui_renderer;
 mod background;
 mod ui;
 mod nebula;
-mod camera;
 
 use engine::Engine;
 
