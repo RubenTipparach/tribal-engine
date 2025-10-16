@@ -2220,7 +2220,37 @@ impl VulkanRenderer {
             
             // Recreate ImGui pipeline with new swapchain extent
             self.imgui_renderer.recreate_pipeline(&self.device, self.render_pass, swapchain_extent)?;
-            
+
+            // Update nebula descriptor sets with new depth image view
+            for (i, &descriptor_set) in self.nebula.descriptor_sets.iter().enumerate() {
+                let buffer_info = vk::DescriptorBufferInfo::default()
+                    .buffer(self.nebula.uniform_buffers[i])
+                    .offset(0)
+                    .range(std::mem::size_of::<crate::nebula::NebulaUniformBufferObject>() as vk::DeviceSize);
+
+                let image_info = vk::DescriptorImageInfo::default()
+                    .image_layout(vk::ImageLayout::DEPTH_STENCIL_READ_ONLY_OPTIMAL)
+                    .image_view(depth_image_view)
+                    .sampler(self.depth_sampler);
+
+                let descriptor_writes = [
+                    vk::WriteDescriptorSet::default()
+                        .dst_set(descriptor_set)
+                        .dst_binding(0)
+                        .dst_array_element(0)
+                        .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                        .buffer_info(std::slice::from_ref(&buffer_info)),
+                    vk::WriteDescriptorSet::default()
+                        .dst_set(descriptor_set)
+                        .dst_binding(1)
+                        .dst_array_element(0)
+                        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                        .image_info(std::slice::from_ref(&image_info)),
+                ];
+
+                self.device.update_descriptor_sets(&descriptor_writes, &[]);
+            }
+
             Ok(())
         }
         

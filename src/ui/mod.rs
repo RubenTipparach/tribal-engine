@@ -44,7 +44,7 @@ impl UiManager {
     /// Build the nebula settings UI
     pub fn build_nebula_settings(ui: &Ui, game: &mut Game) {
         GuiPanelBuilder::new(ui, "Nebula Settings")
-            .size(350.0, 220.0)
+            .size(380.0, 400.0)
             .position(370.0, 10.0)
             .build(|content| {
                 content.text("Volumetric nebula raymarch shader");
@@ -52,11 +52,24 @@ impl UiManager {
                 let config = &mut game.nebula_config;
 
                 content
-                    .header("Nebula Controls")
+                    .header("Basic Controls")
                     .slider_f32("Scale", &mut config.scale, 0.1, 10.0)
                     .slider_f32("Zoom", &mut config.zoom, -2.0, 5.0)
                     .slider_f32("Density", &mut config.density, 0.0, 2.0)
                     .slider_f32("Brightness", &mut config.brightness, 0.1, 3.0)
+
+                    .header("Colors - Center/Edge")
+                    .color_picker("Center Color", &mut config.color_center)
+                    .color_picker("Edge Color", &mut config.color_edge)
+
+                    .header("Colors - Density")
+                    .color_picker("Low Density", &mut config.color_density_low)
+                    .color_picker("High Density", &mut config.color_density_high)
+
+                    .header("Light")
+                    .color_picker("Light Color", &mut config.light_color)
+                    .slider_f32("Light Intensity", &mut config.light_intensity, 0.0, 0.1)
+
                     .separator()
                     .button("Reset to Default", || {
                         game.nebula_config = NebulaConfig::default();
@@ -68,7 +81,7 @@ impl UiManager {
     pub fn build_visibility_settings(ui: &Ui, game: &mut Game) {
         GuiPanelBuilder::new(ui, "Visibility")
             .size(200.0, 100.0)
-            .position(370.0, 240.0)
+            .position(760.0, 10.0)
             .build(|content| {
                 content
                     .text("Toggle objects")

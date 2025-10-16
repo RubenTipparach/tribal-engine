@@ -81,6 +81,17 @@ impl<'a> GuiContentBuilder<'a> {
         self
     }
 
+    pub fn slider_i32(
+        &mut self,
+        label: &str,
+        value: &mut i32,
+        min: i32,
+        max: i32,
+    ) -> &mut Self {
+        self.ui.slider(label, min, max, value);
+        self
+    }
+
     pub fn color_picker(&mut self, label: &str, color: &mut Vec3) -> &mut Self {
         let mut color_array = [color.x, color.y, color.z];
         if self.ui.color_edit3(label, &mut color_array) {

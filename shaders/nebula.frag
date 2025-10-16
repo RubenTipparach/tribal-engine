@@ -15,6 +15,20 @@ layout(binding = 0) uniform UniformBufferObject {
     float density;
     float brightness;
     float scale;
+
+    // Color parameters
+    vec3 color_center;
+    float _padding1;
+    vec3 color_edge;
+    float _padding2;
+    vec3 color_density_low;
+    float _padding3;
+    vec3 color_density_high;
+    float _padding4;
+
+    // Light parameters
+    vec3 light_color;
+    float light_intensity;
 } ubo;
 
 layout(binding = 1) uniform sampler2D depthTexture;
@@ -105,10 +119,12 @@ float map(vec3 p) {
 }
 
 vec3 computeColor(float density, float radius) {
-    vec3 result = mix(vec3(1.0, 0.9, 0.8), vec3(0.4, 0.15, 0.1), density);
-    vec3 colCenter = 7.0 * vec3(0.8, 1.0, 1.0);
-    vec3 colEdge = 1.5 * vec3(0.48, 0.53, 0.5);
-    result *= mix(colCenter, colEdge, min((radius + 0.05) / 0.9, 1.15));
+    // Mix based on density using configurable colors
+    vec3 result = mix(ubo.color_density_low, ubo.color_density_high, density);
+
+    // Mix based on radius using configurable edge/center colors
+    result *= mix(ubo.color_center, ubo.color_edge, min((radius + 0.05) / 0.9, 1.15));
+
     return result * ubo.brightness;
 }
 
@@ -161,41 +177,9 @@ void main() {
     if (RaySphereIntersect(ro, rd, min_dist, max_dist)) {
         t = min_dist * step(t, min_dist);
 
-        // Raymarch loop
+        // Raymarch loop - sample the volumetric nebula
         for (int i = 0; i < 56; i++) {
             vec3 pos = ro + t * rd;
-
-            // Convert scaled position back to world space for depth testing
-            vec3 world_pos = pos * ubo.scale;
-
-            // Check depth buffer at this raymarch position
-            vec4 clip_pos = ubo.proj * ubo.view * vec4(world_pos, 1.0);
-
-            // Convert to NDC and get screen UV
-            vec3 ndc = clip_pos.xyz / clip_pos.w;
-            vec2 screen_uv = ndc.xy * 0.5 + 0.5;
-
-            // Only check depth if UV is valid (on screen)
-            if (screen_uv.x >= 0.0 && screen_uv.x <= 1.0 &&
-                screen_uv.y >= 0.0 && screen_uv.y <= 1.0) {
-
-                // Sample the depth buffer to get solid geometry depth
-                float scene_depth = texture(depthTexture, screen_uv).r;
-
-                // Only stop raymarching if we hit actual solid geometry (not skybox)
-                // Skybox is at far plane (depth ~1.0), so only test against closer geometry
-                const float FAR_PLANE = 0.99; // Slightly less than 1.0 to account for precision
-                const float DEPTH_BIAS = 0.0001;
-
-                if (scene_depth < FAR_PLANE) {
-                    // This is solid geometry (cube), not skybox
-                    float sample_depth = ndc.z;
-
-                    if (sample_depth >= scene_depth - DEPTH_BIAS) {
-                        break;
-                    }
-                }
-            }
 
             if (td > 0.9 * ubo.density || d < 0.1 * t || t > 10.0 || sum.a > 0.99 || t > max_dist)
                 break;
@@ -207,8 +191,7 @@ void main() {
             vec3 ldst = vec3(0.0) - pos;
             float lDist = max(length(ldst), 0.001);
 
-            vec3 lightColor = vec3(1.0, 0.5, 0.25);
-            sum.rgb += (lightColor / (lDist * lDist) / 30.0);
+            sum.rgb += (ubo.light_color / (lDist * lDist) * ubo.light_intensity);
 
             if (d < h) {
                 ld = h - d;
@@ -246,6 +229,26 @@ void main() {
         sum.xyz += starbg;
     }
     #endif
+
+    // Proper depth integration: compute depth of the raymarched volume
+    // and compare with rasterized geometry depth
+
+    // Sample the rasterized depth buffer
+    float scene_depth = texture(depthTexture, inUV).r;
+
+    // Compute the depth of our raymarched endpoint in NDC space
+    // Use the final raymarch position (ro + t * rd) converted to world space
+    vec3 raymarch_end_world = ubo.viewPos + t * rd;
+    vec4 raymarch_clip = ubo.proj * ubo.view * vec4(raymarch_end_world, 1.0);
+    float raymarch_depth = (raymarch_clip.z / raymarch_clip.w) * 0.5 + 0.5;
+
+    // If there's solid geometry at this pixel and it's closer than our raymarch endpoint,
+    // the geometry occludes the nebula
+    const float FAR_PLANE = 0.99;
+    if (scene_depth < FAR_PLANE && scene_depth < raymarch_depth) {
+        // Solid geometry is in front of the nebula volume - discard nebula
+        sum = vec4(0.0);
+    }
 
     outColor = vec4(sum.xyz, sum.a);
 }
