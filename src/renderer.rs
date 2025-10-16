@@ -63,6 +63,7 @@ pub struct VulkanRenderer {
     depth_image: vk::Image,
     depth_image_memory: vk::DeviceMemory,
     depth_image_view: vk::ImageView,
+    depth_sampler: vk::Sampler,
     directional_light: DirectionalLight,
     point_lights: Vec<PointLight>,
     // ImGui
@@ -195,7 +196,10 @@ impl VulkanRenderer {
                 &device,
                 swapchain_extent,
             )?;
-            
+
+            // Create depth sampler for nebula
+            let depth_sampler = Self::create_depth_sampler(&device)?;
+
             // Create framebuffers
             let framebuffers = Self::create_framebuffers(
                 &device,
@@ -320,12 +324,14 @@ impl VulkanRenderer {
                     MAX_FRAMES_IN_FLIGHT,
                 )?;
                 
-                let nebula_descriptor_pool = Self::create_descriptor_pool(&device, MAX_FRAMES_IN_FLIGHT)?;
-                let nebula_descriptor_sets = Self::create_descriptor_sets(
+                let nebula_descriptor_pool = Self::create_nebula_descriptor_pool(&device, MAX_FRAMES_IN_FLIGHT)?;
+                let nebula_descriptor_sets = Self::create_nebula_descriptor_sets(
                     &device,
                     nebula_descriptor_pool,
                     nebula_descriptor_set_layout,
                     &nebula_uniform_buffers,
+                    depth_image_view,
+                    depth_sampler,
                     MAX_FRAMES_IN_FLIGHT,
                 )?;
                 
@@ -447,6 +453,7 @@ impl VulkanRenderer {
                 depth_image,
                 depth_image_memory,
                 depth_image_view,
+                depth_sampler,
                 directional_light,
                 point_lights,
                 imgui_context,
@@ -1512,11 +1519,31 @@ impl VulkanRenderer {
             let pool_size = vk::DescriptorPoolSize::default()
             .ty(vk::DescriptorType::UNIFORM_BUFFER)
             .descriptor_count(count as u32);
-            
+
             let create_info = vk::DescriptorPoolCreateInfo::default()
             .pool_sizes(std::slice::from_ref(&pool_size))
             .max_sets(count as u32);
-            
+
+            Ok(device.create_descriptor_pool(&create_info, None)?)
+        }
+
+        unsafe fn create_nebula_descriptor_pool(
+            device: &ash::Device,
+            count: usize,
+        ) -> anyhow::Result<vk::DescriptorPool> {
+            let pool_sizes = [
+                vk::DescriptorPoolSize::default()
+                    .ty(vk::DescriptorType::UNIFORM_BUFFER)
+                    .descriptor_count(count as u32),
+                vk::DescriptorPoolSize::default()
+                    .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .descriptor_count(count as u32),
+            ];
+
+            let create_info = vk::DescriptorPoolCreateInfo::default()
+                .pool_sizes(&pool_sizes)
+                .max_sets(count as u32);
+
             Ok(device.create_descriptor_pool(&create_info, None)?)
         }
         
@@ -1552,7 +1579,57 @@ impl VulkanRenderer {
             
             Ok(descriptor_sets)
         }
-        
+
+        unsafe fn create_nebula_descriptor_sets(
+            device: &ash::Device,
+            pool: vk::DescriptorPool,
+            layout: vk::DescriptorSetLayout,
+            buffers: &[vk::Buffer],
+            depth_image_view: vk::ImageView,
+            depth_sampler: vk::Sampler,
+            count: usize,
+        ) -> anyhow::Result<Vec<vk::DescriptorSet>> {
+            let layouts = vec![layout; count];
+            let alloc_info = vk::DescriptorSetAllocateInfo::default()
+                .descriptor_pool(pool)
+                .set_layouts(&layouts);
+
+            let descriptor_sets = device.allocate_descriptor_sets(&alloc_info)?;
+
+            for (i, &descriptor_set) in descriptor_sets.iter().enumerate() {
+                // Binding 0: Uniform buffer
+                let buffer_info = vk::DescriptorBufferInfo::default()
+                    .buffer(buffers[i])
+                    .offset(0)
+                    .range(std::mem::size_of::<crate::nebula::NebulaUniformBufferObject>() as vk::DeviceSize);
+
+                let buffer_write = vk::WriteDescriptorSet::default()
+                    .dst_set(descriptor_set)
+                    .dst_binding(0)
+                    .dst_array_element(0)
+                    .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                    .buffer_info(std::slice::from_ref(&buffer_info));
+
+                // Binding 1: Depth texture sampler
+                let image_info = vk::DescriptorImageInfo::default()
+                    .image_layout(vk::ImageLayout::DEPTH_STENCIL_READ_ONLY_OPTIMAL)
+                    .image_view(depth_image_view)
+                    .sampler(depth_sampler);
+
+                let image_write = vk::WriteDescriptorSet::default()
+                    .dst_set(descriptor_set)
+                    .dst_binding(1)
+                    .dst_array_element(0)
+                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .image_info(std::slice::from_ref(&image_info));
+
+                let descriptor_writes = [buffer_write, image_write];
+                device.update_descriptor_sets(&descriptor_writes, &[]);
+            }
+
+            Ok(descriptor_sets)
+        }
+
         unsafe fn create_command_buffers(
             device: &ash::Device,
             command_pool: vk::CommandPool,
@@ -1606,7 +1683,7 @@ impl VulkanRenderer {
             .format(format)
             .tiling(vk::ImageTiling::OPTIMAL)
             .initial_layout(vk::ImageLayout::UNDEFINED)
-            .usage(vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT)
+            .usage(vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT | vk::ImageUsageFlags::SAMPLED)
             .sharing_mode(vk::SharingMode::EXCLUSIVE)
             .samples(vk::SampleCountFlags::TYPE_1);
             
@@ -1641,7 +1718,28 @@ impl VulkanRenderer {
             
             Ok((depth_image, depth_image_memory, depth_image_view))
         }
-        
+
+        unsafe fn create_depth_sampler(device: &ash::Device) -> anyhow::Result<vk::Sampler> {
+            let sampler_info = vk::SamplerCreateInfo::default()
+                .mag_filter(vk::Filter::NEAREST)
+                .min_filter(vk::Filter::NEAREST)
+                .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+                .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+                .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+                .anisotropy_enable(false)
+                .max_anisotropy(1.0)
+                .border_color(vk::BorderColor::FLOAT_OPAQUE_WHITE)
+                .unnormalized_coordinates(false)
+                .compare_enable(false)
+                .compare_op(vk::CompareOp::ALWAYS)
+                .mipmap_mode(vk::SamplerMipmapMode::NEAREST)
+                .mip_lod_bias(0.0)
+                .min_lod(0.0)
+                .max_lod(0.0);
+
+            Ok(device.create_sampler(&sampler_info, None)?)
+        }
+
         unsafe fn update_uniform_buffer(&mut self, image_index: usize, game: &crate::game::Game) -> anyhow::Result<()> {
             let model = game.get_cube_model_matrix();
             let view = game.get_view_matrix();
@@ -1921,7 +2019,34 @@ impl VulkanRenderer {
                 
                 self.device.cmd_draw_indexed(command_buffer, self.mesh.indices.len() as u32, 1, 0, 0, 0);
             }
-            
+
+            // Transition depth image for shader reading
+            let depth_barrier = vk::ImageMemoryBarrier::default()
+                .old_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+                .new_layout(vk::ImageLayout::DEPTH_STENCIL_READ_ONLY_OPTIMAL)
+                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .image(self.depth_image)
+                .subresource_range(vk::ImageSubresourceRange {
+                    aspect_mask: vk::ImageAspectFlags::DEPTH,
+                    base_mip_level: 0,
+                    level_count: 1,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                })
+                .src_access_mask(vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE)
+                .dst_access_mask(vk::AccessFlags::SHADER_READ);
+
+            self.device.cmd_pipeline_barrier(
+                command_buffer,
+                vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
+                vk::PipelineStageFlags::FRAGMENT_SHADER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[depth_barrier],
+            );
+
             // 3. Render nebula volumetric fog (reads depth buffer to interact with objects)
             self.device.cmd_bind_pipeline(
                 command_buffer,
@@ -1940,7 +2065,34 @@ impl VulkanRenderer {
             
             // Draw fullscreen triangle (3 vertices, 1 instance, no vertex buffer)
             self.device.cmd_draw(command_buffer, 3, 1, 0, 0);
-            
+
+            // Transition depth image back to depth attachment for next frame
+            let depth_barrier_back = vk::ImageMemoryBarrier::default()
+                .old_layout(vk::ImageLayout::DEPTH_STENCIL_READ_ONLY_OPTIMAL)
+                .new_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .image(self.depth_image)
+                .subresource_range(vk::ImageSubresourceRange {
+                    aspect_mask: vk::ImageAspectFlags::DEPTH,
+                    base_mip_level: 0,
+                    level_count: 1,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                })
+                .src_access_mask(vk::AccessFlags::SHADER_READ)
+                .dst_access_mask(vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE);
+
+            self.device.cmd_pipeline_barrier(
+                command_buffer,
+                vk::PipelineStageFlags::FRAGMENT_SHADER,
+                vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[depth_barrier_back],
+            );
+
             // Render ImGui
             let draw_data = self.imgui_context.render();
             self.imgui_renderer.render(
@@ -2118,7 +2270,10 @@ impl VulkanRenderer {
                 
                 // Cleanup nebula resources
                 self.nebula.cleanup(&self.device);
-                
+
+                // Cleanup depth sampler
+                self.device.destroy_sampler(self.depth_sampler, None);
+
                 for i in 0..MAX_FRAMES_IN_FLIGHT {
                     self.device.destroy_semaphore(self.image_available_semaphores[i], None);
                     self.device.destroy_semaphore(self.render_finished_semaphores[i], None);

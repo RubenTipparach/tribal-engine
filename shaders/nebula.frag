@@ -17,6 +17,8 @@ layout(binding = 0) uniform UniformBufferObject {
     float scale;
 } ubo;
 
+layout(binding = 1) uniform sampler2D depthTexture;
+
 // Port of "Dusty nebula 4" by Duke
 // https://www.shadertoy.com/view/MsVXWW
 
@@ -163,18 +165,37 @@ void main() {
         for (int i = 0; i < 56; i++) {
             vec3 pos = ro + t * rd;
 
+            // Convert scaled position back to world space for depth testing
+            vec3 world_pos = pos * ubo.scale;
+
             // Check depth buffer at this raymarch position
-            vec4 clip_pos = ubo.proj * ubo.view * vec4(pos, 1.0);
-            float sample_depth = clip_pos.z / clip_pos.w;
+            vec4 clip_pos = ubo.proj * ubo.view * vec4(world_pos, 1.0);
 
-            // Get screen coordinates for depth buffer lookup
-            vec2 screen_uv = (clip_pos.xy / clip_pos.w) * 0.5 + 0.5;
+            // Convert to NDC and get screen UV
+            vec3 ndc = clip_pos.xyz / clip_pos.w;
+            vec2 screen_uv = ndc.xy * 0.5 + 0.5;
 
-            // Depth test is handled by hardware - if this fragment failed depth test,
-            // it means there's solid geometry in front, so we'd never get here
-            // But we need to stop raymarching when we reach solid geometry depth
-            // Since we can't sample depth texture without binding it, we rely on
-            // the hardware depth test rejecting fragments behind solid objects
+            // Only check depth if UV is valid (on screen)
+            if (screen_uv.x >= 0.0 && screen_uv.x <= 1.0 &&
+                screen_uv.y >= 0.0 && screen_uv.y <= 1.0) {
+
+                // Sample the depth buffer to get solid geometry depth
+                float scene_depth = texture(depthTexture, screen_uv).r;
+
+                // Only stop raymarching if we hit actual solid geometry (not skybox)
+                // Skybox is at far plane (depth ~1.0), so only test against closer geometry
+                const float FAR_PLANE = 0.99; // Slightly less than 1.0 to account for precision
+                const float DEPTH_BIAS = 0.0001;
+
+                if (scene_depth < FAR_PLANE) {
+                    // This is solid geometry (cube), not skybox
+                    float sample_depth = ndc.z;
+
+                    if (sample_depth >= scene_depth - DEPTH_BIAS) {
+                        break;
+                    }
+                }
+            }
 
             if (td > 0.9 * ubo.density || d < 0.1 * t || t > 10.0 || sum.a > 0.99 || t > max_dist)
                 break;

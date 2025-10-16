@@ -1,5 +1,6 @@
 use glam::{Mat4, Quat, Vec3};
 use crate::nebula::NebulaConfig;
+use crate::camera::Camera;
 
 /// Skybox configuration
 #[derive(Clone)]
@@ -35,6 +36,8 @@ impl Default for SkyboxConfig {
 pub struct Game {
     /// Time accumulator for animations
     time: f32,
+    /// Camera
+    pub camera: Camera,
     /// Spaceship position
     pub ship_position: Vec3,
     /// Spaceship rotation (quaternion)
@@ -45,12 +48,6 @@ pub struct Game {
     ship_angular_velocity: Vec3,
     /// Ship scale
     pub ship_scale: Vec3,
-    /// Free camera position
-    camera_position: Vec3,
-    /// Free camera rotation (pitch, yaw, roll)
-    camera_pitch: f32,
-    camera_yaw: f32,
-    camera_roll: f32,
     /// Movement speed
     move_speed: f32,
     /// Rotation speed
@@ -67,15 +64,12 @@ impl Game {
     pub fn new() -> Self {
         Self {
             time: 0.0,
+            camera: Camera::default(),
             ship_position: Vec3::ZERO,
             ship_rotation: Quat::IDENTITY,
             ship_velocity: Vec3::ZERO,
             ship_angular_velocity: Vec3::ZERO,
             ship_scale: Vec3::ONE,
-            camera_position: Vec3::new(0.0, 2.0, 5.0),  // Start behind and above origin
-            camera_pitch: 0.0,
-            camera_yaw: 0.0,
-            camera_roll: 0.0,
             move_speed: 5.0,
             rotation_speed: 2.0,
             skybox_config: SkyboxConfig::default(),
@@ -117,32 +111,19 @@ impl Game {
         translation * rotation * scale
     }
     
-    /// Get free camera view matrix
+    /// Get camera view matrix
     pub fn get_view_matrix(&self) -> Mat4 {
-        // Build rotation from pitch, yaw, roll
-        let rotation = Quat::from_euler(
-            glam::EulerRot::YXZ,
-            self.camera_yaw,
-            self.camera_pitch,
-            self.camera_roll,
-        );
-
-        // Create view matrix from camera position and rotation
-        let forward = rotation * Vec3::NEG_Z;
-        let target = self.camera_position + forward;
-        let up = rotation * Vec3::Y;
-
-        Mat4::look_at_rh(self.camera_position, target, up)
+        self.camera.view_matrix()
     }
-    
+
     /// Get the current time for shader effects
     pub fn get_time(&self) -> f32 {
         self.time
     }
-    
+
     /// Get camera position for shaders
     pub fn get_camera_position(&self) -> Vec3 {
-        self.camera_position
+        self.camera.position()
     }
     
     // Control methods
@@ -167,57 +148,18 @@ impl Game {
     }
 
     pub fn rotate_camera(&mut self, pitch_delta: f32, yaw_delta: f32) {
-        // Get current camera rotation as quaternion
-        let current_rotation = Quat::from_euler(
-            glam::EulerRot::YXZ,
-            self.camera_yaw,
-            self.camera_pitch,
-            self.camera_roll,
-        );
-
-        // Get local axes (right and up) that respect the current roll
-        let right = current_rotation * Vec3::X;
-        let up = current_rotation * Vec3::Y;
-
-        // Apply pitch rotation around the local right axis
-        let pitch_rotation = Quat::from_axis_angle(right, pitch_delta);
-
-        // Apply yaw rotation around the local up axis
-        let yaw_rotation = Quat::from_axis_angle(up, yaw_delta);
-
-        // Combine rotations and apply to camera
-        let new_rotation = yaw_rotation * pitch_rotation * current_rotation;
-
-        // Extract back to Euler angles
-        let (yaw, pitch, roll) = new_rotation.to_euler(glam::EulerRot::YXZ);
-        self.camera_yaw = yaw;
-        self.camera_pitch = pitch;
-        self.camera_roll = roll;
+        self.camera.rotate(pitch_delta, yaw_delta);
     }
 
     pub fn move_camera_forward(&mut self, amount: f32) {
-        let rotation = Quat::from_euler(
-            glam::EulerRot::YXZ,
-            self.camera_yaw,
-            self.camera_pitch,
-            self.camera_roll,
-        );
-        let forward = rotation * Vec3::NEG_Z;
-        self.camera_position += forward * amount;
+        self.camera.move_forward(amount);
     }
 
     pub fn move_camera_right(&mut self, amount: f32) {
-        let rotation = Quat::from_euler(
-            glam::EulerRot::YXZ,
-            self.camera_yaw,
-            self.camera_pitch,
-            self.camera_roll,
-        );
-        let right = rotation * Vec3::X;
-        self.camera_position += right * amount;
+        self.camera.move_right(amount);
     }
 
     pub fn roll_camera(&mut self, amount: f32) {
-        self.camera_roll += amount;
+        self.camera.roll(amount);
     }
 }

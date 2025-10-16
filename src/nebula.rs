@@ -13,10 +13,10 @@ pub struct NebulaConfig {
 impl Default for NebulaConfig {
     fn default() -> Self {
         Self {
-            zoom: 0.0,
-            density: 1.0,
-            brightness: 1.0,
-            scale: 1.0,
+            zoom: 0.01,
+            density: 2.0,
+            brightness: 2.0,
+            scale: 3.0,
         }
     }
 }
@@ -74,14 +74,14 @@ impl NebulaRenderer {
             scale: config.scale,
         }
     }
-
+    
     /// Cleanup Vulkan resources
     pub unsafe fn cleanup(&self, device: &ash::Device) {
         device.destroy_buffer(self.uniform_buffers[0], None);
         device.free_memory(self.uniform_buffers_memory[0], None);
         device.destroy_buffer(self.uniform_buffers[1], None);
         device.free_memory(self.uniform_buffers_memory[1], None);
-
+        
         device.destroy_descriptor_pool(self.descriptor_pool, None);
         device.destroy_descriptor_set_layout(self.descriptor_set_layout, None);
         device.destroy_pipeline(self.pipeline, None);
