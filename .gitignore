@@ -1,0 +1,9 @@
+/target
+Cargo.lock
+*.spv
+*.swp
+*.swo
+*~
+.DS_Store
+.history/
+.claude/

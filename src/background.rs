@@ -1,0 +1,81 @@
+use ash::vk;
+use glam::{Mat4, Vec3};
+use crate::mesh::Mesh;
+use crate::game::SkyboxConfig;
+
+/// Manages skybox rendering and related resources
+pub struct SkyboxRenderer {
+    pub mesh: Mesh,
+    pub vertex_buffer: vk::Buffer,
+    pub vertex_buffer_memory: vk::DeviceMemory,
+    pub index_buffer: vk::Buffer,
+    pub index_buffer_memory: vk::DeviceMemory,
+    pub descriptor_set_layout: vk::DescriptorSetLayout,
+    pub pipeline_layout: vk::PipelineLayout,
+    pub pipeline: vk::Pipeline,
+    pub uniform_buffers: Vec<vk::Buffer>,
+    pub uniform_buffers_memory: Vec<vk::DeviceMemory>,
+    pub descriptor_pool: vk::DescriptorPool,
+    pub descriptor_sets: Vec<vk::DescriptorSet>,
+}
+
+/// Uniform buffer object for skybox shader
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct SkyboxUniformBufferObject {
+    pub model: Mat4,
+    pub view: Mat4,
+    pub proj: Mat4,
+    pub view_pos: Vec3,
+    pub star_density: f32,
+    pub star_brightness: f32,
+    pub _padding1: f32,
+    pub _padding2: f32,
+    pub _padding3: f32,
+    pub nebula_primary_color: Vec3,
+    pub nebula_intensity: f32,
+    pub nebula_secondary_color: Vec3,
+    pub background_brightness: f32,
+}
+
+impl SkyboxRenderer {
+    /// Create uniform buffer object from config
+    pub fn create_ubo(
+        view: Mat4,
+        proj: Mat4,
+        view_pos: Vec3,
+        config: &SkyboxConfig,
+    ) -> SkyboxUniformBufferObject {
+        SkyboxUniformBufferObject {
+            model: Mat4::IDENTITY,
+            view,
+            proj,
+            view_pos,
+            star_density: config.star_density,
+            star_brightness: config.star_brightness,
+            _padding1: 0.0,
+            _padding2: 0.0,
+            _padding3: 0.0,
+            nebula_primary_color: config.nebula_primary_color,
+            nebula_intensity: config.nebula_intensity,
+            nebula_secondary_color: config.nebula_secondary_color,
+            background_brightness: config.background_brightness,
+        }
+    }
+
+    /// Cleanup resources
+    pub unsafe fn cleanup(&self, device: &ash::Device) {
+        for i in 0..self.uniform_buffers.len() {
+            device.destroy_buffer(self.uniform_buffers[i], None);
+            device.free_memory(self.uniform_buffers_memory[i], None);
+        }
+        device.destroy_descriptor_pool(self.descriptor_pool, None);
+        device.destroy_descriptor_set_layout(self.descriptor_set_layout, None);
+        device.destroy_pipeline(self.pipeline, None);
+        device.destroy_pipeline_layout(self.pipeline_layout, None);
+        device.destroy_buffer(self.index_buffer, None);
+        device.free_memory(self.index_buffer_memory, None);
+        device.destroy_buffer(self.vertex_buffer, None);
+        device.free_memory(self.vertex_buffer_memory, None);
+    }
+}

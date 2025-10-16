@@ -1,0 +1,261 @@
+use winit::{
+    event::{Event, WindowEvent, KeyEvent, ElementState, DeviceEvent, MouseButton},
+    event_loop::{ControlFlow, EventLoop},
+    window::WindowBuilder,
+    keyboard::{KeyCode, PhysicalKey},
+};
+use crate::renderer::VulkanRenderer;
+use crate::game::Game;
+use std::collections::HashSet;
+
+pub struct Engine {
+    event_loop: EventLoop<()>,
+    renderer: VulkanRenderer,
+}
+
+struct GameState {
+    game: Game,
+    last_update_time: std::time::Instant,
+    pressed_keys: HashSet<KeyCode>,
+    mouse_delta: (f64, f64),
+    right_mouse_pressed: bool,
+    camera_speed: f32,
+}
+
+impl Engine {
+    pub fn new() -> anyhow::Result<Self> {
+        let event_loop = EventLoop::new()?;
+        let window = WindowBuilder::new()
+            .with_title("Tribal Engine - Vulkan SDF Renderer")
+            .with_inner_size(winit::dpi::LogicalSize::new(1280, 720))
+            .build(&event_loop)?;
+
+        let renderer = VulkanRenderer::new(window)?;
+
+        Ok(Self {
+            event_loop,
+            renderer,
+        })
+    }
+
+    pub fn run(mut self) -> anyhow::Result<()> {
+        let mut game_state = GameState {
+            game: Game::new(),
+            last_update_time: std::time::Instant::now(),
+            pressed_keys: HashSet::new(),
+            mouse_delta: (0.0, 0.0),
+            right_mouse_pressed: false,
+            camera_speed: 5.0,
+        };
+
+        // Show cursor by default so user can interact with ImGui
+        self.renderer.window().set_cursor_visible(true);
+
+        self.event_loop.run(move |event, target| {
+            target.set_control_flow(ControlFlow::Poll);
+
+            // Pass all events to ImGui first
+            let window_ptr = self.renderer.window() as *const _;
+            let window = unsafe { &*window_ptr };
+            self.renderer.handle_imgui_event(window, &event);
+
+            match event {
+                Event::WindowEvent {
+                    event: WindowEvent::CloseRequested,
+                    ..
+                } => {
+                    target.exit();
+                }
+                Event::WindowEvent {
+                    event: WindowEvent::MouseInput { state, button, .. },
+                    ..
+                } => {
+                    // Only handle right mouse button for camera control if ImGui isn't using the mouse
+                    if button == MouseButton::Right && !self.renderer.imgui_wants_mouse() {
+                        match state {
+                            ElementState::Pressed => {
+                                game_state.right_mouse_pressed = true;
+                                self.renderer.window().set_cursor_visible(false);
+                                let _ = self.renderer.window().set_cursor_grab(winit::window::CursorGrabMode::Confined);
+                            }
+                            ElementState::Released => {
+                                game_state.right_mouse_pressed = false;
+                                self.renderer.window().set_cursor_visible(true);
+                                let _ = self.renderer.window().set_cursor_grab(winit::window::CursorGrabMode::None);
+                                // Reset mouse delta when releasing button
+                                game_state.mouse_delta = (0.0, 0.0);
+                            }
+                        }
+                    }
+                }
+                Event::DeviceEvent {
+                    event: DeviceEvent::MouseMotion { delta },
+                    ..
+                } => {
+                    // Only accumulate mouse delta when right mouse button is pressed
+                    if game_state.right_mouse_pressed {
+                        game_state.mouse_delta.0 += delta.0;
+                        game_state.mouse_delta.1 += delta.1;
+                    }
+                }
+                Event::WindowEvent {
+                    event: WindowEvent::KeyboardInput {
+                        event: KeyEvent {
+                            physical_key: PhysicalKey::Code(key_code),
+                            state,
+                            ..
+                        },
+                        ..
+                    },
+                    ..
+                } => {
+                    match state {
+                        ElementState::Pressed => {
+                            game_state.pressed_keys.insert(key_code);
+                        }
+                        ElementState::Released => {
+                            game_state.pressed_keys.remove(&key_code);
+                        }
+                    }
+                }
+                Event::WindowEvent {
+                    event: WindowEvent::MouseWheel { delta, .. },
+                    ..
+                } => {
+                    use winit::event::MouseScrollDelta;
+                    let scroll_amount = match delta {
+                        MouseScrollDelta::LineDelta(_x, y) => y,
+                        MouseScrollDelta::PixelDelta(pos) => (pos.y / 20.0) as f32,
+                    };
+                    game_state.camera_speed = (game_state.camera_speed + scroll_amount).max(0.1).min(50.0);
+                    println!("Camera Speed: {:.1}", game_state.camera_speed);
+                }
+                Event::WindowEvent {
+                    event: WindowEvent::Resized(_),
+                    ..
+                } => {
+                    self.renderer.handle_resize();
+                }
+                Event::AboutToWait => {
+                    self.renderer.window().request_redraw();
+                }
+                Event::WindowEvent {
+                    event: WindowEvent::RedrawRequested,
+                    ..
+                } => {
+                    // Update game logic
+                    let now = std::time::Instant::now();
+                    let delta_time = now.duration_since(game_state.last_update_time).as_secs_f32();
+                    game_state.last_update_time = now;
+
+                    // Process input
+                    process_input(&mut game_state, delta_time);
+
+                    game_state.game.update(delta_time);
+
+                    // Render with game state
+                    if let Err(e) = self.renderer.render(&mut game_state.game) {
+                        eprintln!("Render error: {}", e);
+                        target.exit();
+                    }
+                }
+                _ => {}
+            }
+        })?;
+
+        Ok(())
+    }
+}
+
+fn process_input(game_state: &mut GameState, delta_time: f32) {
+    // Mouse camera rotation - only when right mouse button is pressed
+    let mouse_sensitivity = 0.002;
+    if game_state.right_mouse_pressed && (game_state.mouse_delta.0 != 0.0 || game_state.mouse_delta.1 != 0.0) {
+        game_state.game.rotate_camera(
+            -(game_state.mouse_delta.1 as f32) * mouse_sensitivity,  // Pitch (vertical)
+            -(game_state.mouse_delta.0 as f32) * mouse_sensitivity,  // Yaw (horizontal)
+        );
+        game_state.mouse_delta = (0.0, 0.0);
+    }
+
+    // Free camera movement controls
+    let speed = game_state.camera_speed * delta_time;
+
+    // W/S - Forward/Backward (in the direction camera is facing)
+    if game_state.pressed_keys.contains(&KeyCode::KeyW) {
+        game_state.game.move_camera_forward(speed);
+    }
+    if game_state.pressed_keys.contains(&KeyCode::KeyS) {
+        game_state.game.move_camera_forward(-speed);
+    }
+
+    // A/D - Strafe left/right
+    if game_state.pressed_keys.contains(&KeyCode::KeyA) {
+        game_state.game.move_camera_right(-speed);
+    }
+    if game_state.pressed_keys.contains(&KeyCode::KeyD) {
+        game_state.game.move_camera_right(speed);
+    }
+
+    // Q/E - Roll
+    if game_state.pressed_keys.contains(&KeyCode::KeyQ) {
+        game_state.game.roll_camera(-2.0 * delta_time);
+    }
+    if game_state.pressed_keys.contains(&KeyCode::KeyE) {
+        game_state.game.roll_camera(2.0 * delta_time);
+    }
+
+    // Skybox tweaking controls
+    let config_speed = 0.5 * delta_time;
+
+    // Star density (1/2)
+    if game_state.pressed_keys.contains(&KeyCode::Digit1) {
+        game_state.game.skybox_config.star_density = (game_state.game.skybox_config.star_density - config_speed).max(0.1);
+        println!("Star Density: {:.2}", game_state.game.skybox_config.star_density);
+    }
+    if game_state.pressed_keys.contains(&KeyCode::Digit2) {
+        game_state.game.skybox_config.star_density = (game_state.game.skybox_config.star_density + config_speed).min(2.0);
+        println!("Star Density: {:.2}", game_state.game.skybox_config.star_density);
+    }
+
+    // Star brightness (3/4)
+    if game_state.pressed_keys.contains(&KeyCode::Digit3) {
+        game_state.game.skybox_config.star_brightness = (game_state.game.skybox_config.star_brightness - config_speed).max(0.0);
+        println!("Star Brightness: {:.2}", game_state.game.skybox_config.star_brightness);
+    }
+    if game_state.pressed_keys.contains(&KeyCode::Digit4) {
+        game_state.game.skybox_config.star_brightness = (game_state.game.skybox_config.star_brightness + config_speed).min(3.0);
+        println!("Star Brightness: {:.2}", game_state.game.skybox_config.star_brightness);
+    }
+
+    // Nebula intensity (5/6)
+    if game_state.pressed_keys.contains(&KeyCode::Digit5) {
+        game_state.game.skybox_config.nebula_intensity = (game_state.game.skybox_config.nebula_intensity - config_speed * 0.5).max(0.0);
+        println!("Nebula Intensity: {:.2}", game_state.game.skybox_config.nebula_intensity);
+    }
+    if game_state.pressed_keys.contains(&KeyCode::Digit6) {
+        game_state.game.skybox_config.nebula_intensity = (game_state.game.skybox_config.nebula_intensity + config_speed * 0.5).min(2.0);
+        println!("Nebula Intensity: {:.2}", game_state.game.skybox_config.nebula_intensity);
+    }
+
+    // Background brightness (7/8)
+    if game_state.pressed_keys.contains(&KeyCode::Digit7) {
+        game_state.game.skybox_config.background_brightness = (game_state.game.skybox_config.background_brightness - config_speed * 0.1).max(0.0);
+        println!("Background Brightness: {:.2}", game_state.game.skybox_config.background_brightness);
+    }
+    if game_state.pressed_keys.contains(&KeyCode::Digit8) {
+        game_state.game.skybox_config.background_brightness = (game_state.game.skybox_config.background_brightness + config_speed * 0.1).min(0.5);
+        println!("Background Brightness: {:.2}", game_state.game.skybox_config.background_brightness);
+    }
+
+    // Print controls help (H key)
+    if game_state.pressed_keys.contains(&KeyCode::KeyH) {
+        println!("\n=== SKYBOX CONTROLS ===");
+        println!("1/2: Star Density (-/+)");
+        println!("3/4: Star Brightness (-/+)");
+        println!("5/6: Nebula Intensity (-/+)");
+        println!("7/8: Background Brightness (-/+)");
+        println!("H: Show this help");
+        println!("=======================\n");
+    }
+}
