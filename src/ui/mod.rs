@@ -167,35 +167,79 @@ impl UiManager {
                 content.text_disabled("Click selected to focus");
                 content.separator();
 
-                // Collect object data first to avoid borrow issues
-                let objects: Vec<(usize, String)> = game
+                // Collect objects and categorize them
+                let all_objects: Vec<(usize, String, crate::scene::ObjectType)> = game
                     .scene
                     .objects_sorted()
                     .iter()
-                    .map(|obj| (obj.id, obj.name.clone()))
+                    .map(|obj| (obj.id, obj.name.clone(), obj.object_type.clone()))
                     .collect();
+
                 let selected_id = game.scene.selected_object_id();
 
-                for (id, name) in objects {
-                    let is_selected = selected_id == Some(id);
-                    let label = if is_selected {
-                        format!("> {}", name)
-                    } else {
-                        format!("  {}", name)
-                    };
+                // Split into singletons and regular objects
+                let singletons: Vec<_> = all_objects.iter()
+                    .filter(|(_, _, obj_type)| matches!(obj_type,
+                        crate::scene::ObjectType::Skybox |
+                        crate::scene::ObjectType::Nebula |
+                        crate::scene::ObjectType::DirectionalLight))
+                    .collect();
 
-                    if ui.selectable(&label) {
-                        // If clicking already selected object, focus on it
-                        if is_selected {
-                            double_clicked_obj_id = Some(id);
+                let objects: Vec<_> = all_objects.iter()
+                    .filter(|(_, _, obj_type)| !matches!(obj_type,
+                        crate::scene::ObjectType::Skybox |
+                        crate::scene::ObjectType::Nebula |
+                        crate::scene::ObjectType::DirectionalLight))
+                    .collect();
+
+                // Render Singletons section
+                if !singletons.is_empty() {
+                    content.header("Singletons");
+                    for (id, name, _obj_type) in singletons {
+                        let is_selected = selected_id == Some(*id);
+                        let label = if is_selected {
+                            format!("> {}", name)
                         } else {
-                            clicked_obj_id = Some(id);
+                            format!("  {}", name)
+                        };
+
+                        if ui.selectable(&label) {
+                            if is_selected {
+                                double_clicked_obj_id = Some(*id);
+                            } else {
+                                clicked_obj_id = Some(*id);
+                            }
+                        }
+
+                        if ui.is_item_hovered() && ui.is_mouse_double_clicked(imgui::MouseButton::Left) {
+                            double_clicked_obj_id = Some(*id);
                         }
                     }
+                    content.separator();
+                }
 
-                    // Check for double-click (also focuses)
-                    if ui.is_item_hovered() && ui.is_mouse_double_clicked(imgui::MouseButton::Left) {
-                        double_clicked_obj_id = Some(id);
+                // Render Objects section
+                if !objects.is_empty() {
+                    content.header("Objects");
+                    for (id, name, _obj_type) in objects {
+                        let is_selected = selected_id == Some(*id);
+                        let label = if is_selected {
+                            format!("> {}", name)
+                        } else {
+                            format!("  {}", name)
+                        };
+
+                        if ui.selectable(&label) {
+                            if is_selected {
+                                double_clicked_obj_id = Some(*id);
+                            } else {
+                                clicked_obj_id = Some(*id);
+                            }
+                        }
+
+                        if ui.is_item_hovered() && ui.is_mouse_double_clicked(imgui::MouseButton::Left) {
+                            double_clicked_obj_id = Some(*id);
+                        }
                     }
                 }
 
@@ -389,6 +433,58 @@ impl UiManager {
         if transform_changed {
             game.mark_scene_dirty();
         }
+
+        // Material Editor Panel
+        GuiPanelBuilder::new(ui, "Material Editor")
+            .size(250.0, 220.0)
+            .position(630.0, 290.0)
+            .build(|content| {
+                content.text("PBR Material Properties");
+                content.separator();
+
+                // Albedo color
+                content.text("Albedo (Base Color)");
+                let mut albedo = [game.material.albedo.x, game.material.albedo.y, game.material.albedo.z];
+                if ui.color_edit3("##albedo", &mut albedo) {
+                    game.material.albedo = glam::Vec3::new(albedo[0], albedo[1], albedo[2]);
+                }
+
+                content.separator();
+
+                // Metallic slider
+                ui.text("Metallic");
+                ui.slider("##metallic", 0.0, 1.0, &mut game.material.metallic);
+                ui.same_line();
+                ui.text_disabled("(0=plastic, 1=metal)");
+
+                // Roughness slider
+                ui.text("Roughness");
+                ui.slider("##roughness", 0.0, 1.0, &mut game.material.roughness);
+                ui.same_line();
+                ui.text_disabled("(0=smooth, 1=rough)");
+
+                // AO intensity slider
+                ui.text("AO Intensity");
+                ui.slider("##ao_intensity", 0.0, 2.0, &mut game.material.ao_intensity);
+                ui.same_line();
+                ui.text_disabled("(ambient occlusion)");
+
+                content.separator();
+
+                // Preset buttons
+                content.text("Presets:");
+                if ui.button("Plastic") {
+                    game.material = crate::material::MaterialProperties::plastic(game.material.albedo);
+                }
+                ui.same_line();
+                if ui.button("Metal") {
+                    game.material = crate::material::MaterialProperties::metallic(game.material.albedo, 0.3);
+                }
+                ui.same_line();
+                if ui.button("Matte") {
+                    game.material = crate::material::MaterialProperties::matte(game.material.albedo);
+                }
+            });
     }
 
     /// Build gizmo toolbar

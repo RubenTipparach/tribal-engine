@@ -294,4 +294,93 @@ impl Mesh {
 
         Ok(Self { vertices, indices })
     }
+
+    /// Create a directional light visualization (arrow pointing in light direction)
+    pub fn create_directional_light_viz() -> Self {
+        let mut vertices = Vec::new();
+        let mut indices = Vec::new();
+
+        // Arrow shaft (cylinder)
+        let shaft_radius = 0.05;
+        let shaft_length = 1.0;
+        let segments = 8;
+
+        // Arrow points down -Y axis (light shines downward by default)
+        // Shaft vertices
+        for i in 0..=segments {
+            let angle = (i as f32 / segments as f32) * std::f32::consts::TAU;
+            let x = angle.cos() * shaft_radius;
+            let z = angle.sin() * shaft_radius;
+
+            // Top of shaft
+            vertices.push(Vertex {
+                position: Vec3::new(x, 0.0, z),
+                normal: Vec3::new(x, 0.0, z).normalize(),
+                uv: Vec2::ZERO,
+            });
+
+            // Bottom of shaft
+            vertices.push(Vertex {
+                position: Vec3::new(x, -shaft_length, z),
+                normal: Vec3::new(x, 0.0, z).normalize(),
+                uv: Vec2::ZERO,
+            });
+        }
+
+        // Create shaft indices
+        for i in 0..segments {
+            let top1 = i * 2;
+            let bot1 = i * 2 + 1;
+            let top2 = (i + 1) * 2;
+            let bot2 = (i + 1) * 2 + 1;
+
+            indices.push(top1);
+            indices.push(bot1);
+            indices.push(top2);
+
+            indices.push(top2);
+            indices.push(bot1);
+            indices.push(bot2);
+        }
+
+        let base_vertex_count = vertices.len() as u32;
+
+        // Arrow head (cone)
+        let cone_radius = 0.15;
+        let cone_height = 0.3;
+        let cone_base_y = -shaft_length;
+
+        // Cone base vertices
+        for i in 0..=segments {
+            let angle = (i as f32 / segments as f32) * std::f32::consts::TAU;
+            let x = angle.cos() * cone_radius;
+            let z = angle.sin() * cone_radius;
+
+            vertices.push(Vertex {
+                position: Vec3::new(x, cone_base_y, z),
+                normal: Vec3::new(x, 0.5, z).normalize(),
+                uv: Vec2::ZERO,
+            });
+        }
+
+        // Cone tip
+        let tip_idx = vertices.len() as u32;
+        vertices.push(Vertex {
+            position: Vec3::new(0.0, cone_base_y - cone_height, 0.0),
+            normal: Vec3::new(0.0, -1.0, 0.0),
+            uv: Vec2::ZERO,
+        });
+
+        // Create cone indices
+        for i in 0..segments {
+            let base1 = base_vertex_count + i;
+            let base2 = base_vertex_count + i + 1;
+
+            indices.push(base1);
+            indices.push(base2);
+            indices.push(tip_idx);
+        }
+
+        Self { vertices, indices }
+    }
 }

@@ -32,13 +32,13 @@
         "position": [
           0.0,
           0.0,
-          0.0
+          -4.389787
         ],
         "rotation": [
           0.0,
           0.0,
-          0.0,
-          1.0
+          0.0030493152,
+          0.9999953
         ],
         "scale": [
           1.0,
@@ -166,6 +166,30 @@
           2.7011123,
           0.8321736,
           1.8068653
+        ]
+      },
+      "visible": true
+    },
+    {
+      "id": 7,
+      "name": "Directional Light",
+      "object_type": "DirectionalLight",
+      "transform": {
+        "position": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.42808348,
+          0.9037366
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
         ]
       },
       "visible": true

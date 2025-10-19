@@ -41,11 +41,11 @@
       "z": 1.0
     },
     "nebula_secondary_color": {
-      "x": 0.8,
-      "y": 0.5664093,
-      "z": 0.3
+      "x": 0.0,
+      "y": 0.02564065,
+      "z": 0.03861004
     },
-    "nebula_intensity": 0.133,
+    "nebula_intensity": 0.085,
     "background_brightness": 0.0
   },
   "camera": {

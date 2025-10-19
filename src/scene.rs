@@ -67,6 +67,7 @@ pub enum ObjectType {
     Cube,
     Nebula,
     Skybox,
+    DirectionalLight,
     Mesh(String), // Custom mesh with path to .obj file
     Custom(u32), // For future custom mesh support
 }
@@ -103,6 +104,7 @@ impl SceneObject {
             ObjectType::Cube => 2.0, // Cube is 2x2x2
             ObjectType::Nebula => 10.0, // Nebula is larger
             ObjectType::Skybox => 50.0, // Skybox is very large
+            ObjectType::DirectionalLight => 1.5, // Light visualization arrow
             ObjectType::Mesh(_) => 5.0, // Default size for mesh objects
             ObjectType::Custom(_) => 2.0, // Default for custom objects
         }

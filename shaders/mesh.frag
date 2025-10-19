@@ -10,18 +10,20 @@ layout(binding = 0) uniform UniformBufferObject {
     uint pointLightCount;
 } ubo;
 
+// Material properties via push constants (after mat4 model at offset 64)
+layout(push_constant) uniform MaterialPushConstants {
+    layout(offset = 64) vec3 albedo;
+    layout(offset = 76) float metallic;
+    layout(offset = 80) float roughness;
+    layout(offset = 84) float ao_intensity;
+} material;
+
 layout(location = 0) in vec3 fragPosition;
 layout(location = 1) in vec3 fragNormal;
 layout(location = 2) in vec2 fragUV;
 layout(location = 3) in vec3 viewPos;
 
 layout(location = 0) out vec4 outColor;
-
-// Material properties
-const vec3 albedo = vec3(0.8, 0.8, 0.8);
-const float metallic = 0.0;
-const float roughness = 0.5;
-const float ao = 1.0;
 
 const float PI = 3.14159265359;
 
@@ -62,7 +64,18 @@ vec3 fresnelSchlick(float cosTheta, vec3 F0) {
     return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
 }
 
-vec3 calculateLight(vec3 N, vec3 V, vec3 L, vec3 lightColor, float lightIntensity, vec3 F0) {
+// Simple vertex-based ambient occlusion approximation
+// Uses the idea that concave areas (facing away from view) are more occluded
+float calculateSimpleAO(vec3 N, vec3 V) {
+    float NdotV = max(dot(N, V), 0.0);
+    // Areas facing away from camera get more occlusion
+    float ao = mix(0.3, 1.0, NdotV);
+    // Add some vertex-based cavity darkening
+    float cavity = pow(NdotV, 2.0);
+    return mix(ao, 1.0, cavity);
+}
+
+vec3 calculateLight(vec3 N, vec3 V, vec3 L, vec3 lightColor, float lightIntensity, vec3 F0, vec3 albedo, float metallic, float roughness) {
     vec3 H = normalize(V + L);
 
     // Cook-Torrance BRDF
@@ -89,18 +102,21 @@ void main() {
 
     // Base reflectivity (F0)
     vec3 F0 = vec3(0.04);
-    F0 = mix(F0, albedo, metallic);
+    F0 = mix(F0, material.albedo, material.metallic);
 
     vec3 Lo = vec3(0.0);
 
     // Directional light
     vec3 L = normalize(-ubo.dirLightDirection);
-    Lo += calculateLight(N, V, L, ubo.dirLightColor, ubo.dirLightIntensity, F0);
+    Lo += calculateLight(N, V, L, ubo.dirLightColor, ubo.dirLightIntensity, F0, material.albedo, material.metallic, material.roughness);
 
     // TODO: Add point lights (will need separate uniform buffer or storage buffer)
 
-    // Ambient term (simplified)
-    vec3 ambient = vec3(0.03) * albedo * ao;
+    // Calculate ambient occlusion
+    float ao = calculateSimpleAO(N, V) * material.ao_intensity;
+
+    // Ambient term with AO
+    vec3 ambient = vec3(0.03) * material.albedo * ao;
     vec3 color = ambient + Lo;
 
     // HDR tonemapping and gamma correction

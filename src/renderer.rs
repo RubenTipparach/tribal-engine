@@ -6,6 +6,7 @@ use glam::{Mat4, Vec2, Vec3};
 use imgui::Context;
 
 use crate::mesh::{Mesh, Vertex};
+use crate::material::MaterialProperties;
 use crate::lighting::{DirectionalLight, PointLight};
 use crate::imgui_renderer::ImGuiRenderer;
 use crate::background::{SkyboxRenderer, SkyboxUniformBufferObject};
@@ -14,6 +15,20 @@ use crate::nebula::{NebulaRenderer, NebulaUniformBufferObject};
 use crate::gizmo::GizmoMesh;
 
 const MAX_FRAMES_IN_FLIGHT: usize = 2;
+
+/// Push constants for mesh rendering (model matrix + material properties)
+#[repr(C)]
+#[derive(Copy, Clone)]
+struct MeshPushConstants {
+    model: glam::Mat4,           // 64 bytes
+    albedo: glam::Vec3,          // 12 bytes
+    metallic: f32,               // 4 bytes
+    roughness: f32,              // 4 bytes
+    ao_intensity: f32,           // 4 bytes
+}
+
+unsafe impl bytemuck::Pod for MeshPushConstants {}
+unsafe impl bytemuck::Zeroable for MeshPushConstants {}
 
 pub struct VulkanRenderer {
     _entry: Entry,
@@ -35,6 +50,7 @@ pub struct VulkanRenderer {
     descriptor_set_layout: vk::DescriptorSetLayout,
     pipeline_layout: vk::PipelineLayout,
     graphics_pipeline: vk::Pipeline,
+    wireframe_pipeline: vk::Pipeline,  // Wireframe rendering pipeline
     // Skybox
     skybox: SkyboxRenderer,
     // Nebula
@@ -74,6 +90,14 @@ pub struct VulkanRenderer {
     cube_vertex_buffer_memory: vk::DeviceMemory,
     cube_index_buffer: vk::Buffer,
     cube_index_buffer_memory: vk::DeviceMemory,
+    // Custom mesh storage (path -> (mesh, vertex_buffer, index_buffer, memories))
+    custom_meshes: std::collections::HashMap<String, (Mesh, vk::Buffer, vk::DeviceMemory, vk::Buffer, vk::DeviceMemory)>,
+    // Directional light visualization
+    dir_light_mesh: Mesh,
+    dir_light_vertex_buffer: vk::Buffer,
+    dir_light_vertex_buffer_memory: vk::DeviceMemory,
+    dir_light_index_buffer: vk::Buffer,
+    dir_light_index_buffer_memory: vk::DeviceMemory,
     // Legacy fields for compatibility
     mesh: Mesh,
     vertex_buffer: vk::Buffer,
@@ -219,7 +243,10 @@ impl VulkanRenderer {
             // Create graphics pipeline
             let (pipeline_layout, graphics_pipeline) =
             Self::create_graphics_pipeline(&device, swapchain_extent, render_pass, descriptor_set_layout)?;
-            
+
+            // Create wireframe pipeline (reuses same pipeline layout)
+            let wireframe_pipeline = Self::create_wireframe_pipeline(&device, swapchain_extent, render_pass, pipeline_layout)?;
+
             // Create depth resources
             let (depth_image, depth_image_memory, depth_image_view) = Self::create_depth_resources(
                 &instance,
@@ -530,7 +557,26 @@ impl VulkanRenderer {
                 &window,
                 imgui_winit_support::HiDpiMode::Default,
             );
-            
+
+            // Create directional light visualization mesh
+            let dir_light_mesh = Mesh::create_directional_light_viz();
+            let (dir_light_vertex_buffer, dir_light_vertex_buffer_memory) = Self::create_vertex_buffer(
+                &instance,
+                physical_device,
+                &device,
+                command_pool,
+                graphics_queue,
+                &dir_light_mesh.vertices,
+            )?;
+            let (dir_light_index_buffer, dir_light_index_buffer_memory) = Self::create_index_buffer(
+                &instance,
+                physical_device,
+                &device,
+                command_pool,
+                graphics_queue,
+                &dir_light_mesh.indices,
+            )?;
+
             // Set up ImGui fonts first
             imgui_context.fonts().add_font(&[imgui::FontSource::DefaultFontData {
                 config: Some(imgui::FontConfig {
@@ -570,6 +616,7 @@ impl VulkanRenderer {
                 descriptor_set_layout,
                 pipeline_layout,
                 graphics_pipeline,
+                wireframe_pipeline,
                 skybox,
                 nebula,
                 gizmo_translate_mesh,
@@ -605,6 +652,12 @@ impl VulkanRenderer {
                 cube_vertex_buffer_memory,
                 cube_index_buffer,
                 cube_index_buffer_memory,
+                custom_meshes: std::collections::HashMap::new(),
+                dir_light_mesh,
+                dir_light_vertex_buffer,
+                dir_light_vertex_buffer_memory,
+                dir_light_index_buffer,
+                dir_light_index_buffer_memory,
                 mesh,
                 vertex_buffer,
                 vertex_buffer_memory,
@@ -1081,11 +1134,11 @@ impl VulkanRenderer {
 
             let set_layouts = [descriptor_set_layout];
 
-            // Define push constant range for model matrix
+            // Define push constant range for model matrix + material properties
             let push_constant_range = vk::PushConstantRange::default()
-                .stage_flags(vk::ShaderStageFlags::VERTEX)
+                .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)
                 .offset(0)
-                .size(std::mem::size_of::<glam::Mat4>() as u32);
+                .size(std::mem::size_of::<MeshPushConstants>() as u32);
 
             let pipeline_layout_info = vk::PipelineLayoutCreateInfo::default()
                 .set_layouts(&set_layouts)
@@ -1117,7 +1170,123 @@ impl VulkanRenderer {
             
             Ok((pipeline_layout, pipelines[0]))
         }
-        
+
+        unsafe fn create_wireframe_pipeline(
+            device: &ash::Device,
+            extent: vk::Extent2D,
+            render_pass: vk::RenderPass,
+            pipeline_layout: vk::PipelineLayout, // Reuse same layout as graphics pipeline
+        ) -> anyhow::Result<vk::Pipeline> {
+            let vert_shader_code = include_bytes!("../shaders/wireframe.vert.spv");
+            let frag_shader_code = include_bytes!("../shaders/wireframe.frag.spv");
+
+            let vert_shader_module = Self::create_shader_module(device, vert_shader_code)?;
+            let frag_shader_module = Self::create_shader_module(device, frag_shader_code)?;
+
+            let entry_point = CString::new("main")?;
+
+            let vert_stage_info = vk::PipelineShaderStageCreateInfo::default()
+                .stage(vk::ShaderStageFlags::VERTEX)
+                .module(vert_shader_module)
+                .name(&entry_point);
+
+            let frag_stage_info = vk::PipelineShaderStageCreateInfo::default()
+                .stage(vk::ShaderStageFlags::FRAGMENT)
+                .module(frag_shader_module)
+                .name(&entry_point);
+
+            let shader_stages = [vert_stage_info, frag_stage_info];
+
+            let binding_description = Vertex::get_binding_description();
+            let attribute_descriptions = Vertex::get_attribute_descriptions();
+
+            let vertex_input_info = vk::PipelineVertexInputStateCreateInfo::default()
+                .vertex_binding_descriptions(std::slice::from_ref(&binding_description))
+                .vertex_attribute_descriptions(&attribute_descriptions);
+
+            let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
+                .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
+                .primitive_restart_enable(false);
+
+            let viewport = vk::Viewport {
+                x: 0.0,
+                y: 0.0,
+                width: extent.width as f32,
+                height: extent.height as f32,
+                min_depth: 0.0,
+                max_depth: 1.0,
+            };
+
+            let scissor = vk::Rect2D {
+                offset: vk::Offset2D { x: 0, y: 0 },
+                extent,
+            };
+
+            let viewport_state = vk::PipelineViewportStateCreateInfo::default()
+                .viewports(std::slice::from_ref(&viewport))
+                .scissors(std::slice::from_ref(&scissor));
+
+            // WIREFRAME MODE - this is the key difference!
+            let rasterizer = vk::PipelineRasterizationStateCreateInfo::default()
+                .depth_clamp_enable(false)
+                .rasterizer_discard_enable(false)
+                .polygon_mode(vk::PolygonMode::LINE)  // LINE mode for wireframe!
+                .line_width(1.5)  // Slightly thicker lines
+                .cull_mode(vk::CullModeFlags::NONE)  // Don't cull for wireframe
+                .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
+                .depth_bias_enable(false);
+
+            let multisampling = vk::PipelineMultisampleStateCreateInfo::default()
+                .sample_shading_enable(false)
+                .rasterization_samples(vk::SampleCountFlags::TYPE_1);
+
+            // Wireframe should write depth but at a slight offset to avoid z-fighting
+            let depth_stencil = vk::PipelineDepthStencilStateCreateInfo::default()
+                .depth_test_enable(true)
+                .depth_write_enable(false) // Don't write depth for wireframe overlay
+                .depth_compare_op(vk::CompareOp::LESS_OR_EQUAL)
+                .depth_bounds_test_enable(false)
+                .stencil_test_enable(false);
+
+            let color_blend_attachment = vk::PipelineColorBlendAttachmentState::default()
+                .color_write_mask(vk::ColorComponentFlags::RGBA)
+                .blend_enable(true)
+                .src_color_blend_factor(vk::BlendFactor::SRC_ALPHA)
+                .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
+                .color_blend_op(vk::BlendOp::ADD)
+                .src_alpha_blend_factor(vk::BlendFactor::ONE)
+                .dst_alpha_blend_factor(vk::BlendFactor::ZERO)
+                .alpha_blend_op(vk::BlendOp::ADD);
+
+            let color_blending = vk::PipelineColorBlendStateCreateInfo::default()
+                .logic_op_enable(false)
+                .attachments(std::slice::from_ref(&color_blend_attachment));
+
+            let pipeline_info = vk::GraphicsPipelineCreateInfo::default()
+                .stages(&shader_stages)
+                .vertex_input_state(&vertex_input_info)
+                .input_assembly_state(&input_assembly)
+                .viewport_state(&viewport_state)
+                .rasterization_state(&rasterizer)
+                .multisample_state(&multisampling)
+                .depth_stencil_state(&depth_stencil)
+                .color_blend_state(&color_blending)
+                .layout(pipeline_layout)
+                .render_pass(render_pass)
+                .subpass(0);
+
+            let pipelines = device.create_graphics_pipelines(
+                vk::PipelineCache::null(),
+                std::slice::from_ref(&pipeline_info),
+                None,
+            ).map_err(|e| anyhow::anyhow!("Failed to create wireframe pipeline: {:?}", e.1))?;
+
+            device.destroy_shader_module(vert_shader_module, None);
+            device.destroy_shader_module(frag_shader_module, None);
+
+            Ok(pipelines[0])
+        }
+
         unsafe fn create_shader_module(
             device: &ash::Device,
             code: &[u8],
@@ -1630,7 +1799,49 @@ impl VulkanRenderer {
             
             Ok((index_buffer, index_buffer_memory))
         }
-        
+
+        /// Load a custom mesh from OBJ file and create GPU buffers
+        pub unsafe fn load_custom_mesh(&mut self, path: &str) -> anyhow::Result<()> {
+            // Check if already loaded
+            if self.custom_meshes.contains_key(path) {
+                return Ok(());
+            }
+
+            println!("Loading custom mesh: {}", path);
+
+            // Load mesh from file
+            let mesh = Mesh::from_obj(path)?;
+
+            // Create vertex buffer
+            let (vertex_buffer, vertex_memory) = Self::create_vertex_buffer(
+                &self.instance,
+                self.physical_device,
+                &self.device,
+                self.command_pool,
+                self.graphics_queue,
+                &mesh.vertices,
+            )?;
+
+            // Create index buffer
+            let (index_buffer, index_memory) = Self::create_index_buffer(
+                &self.instance,
+                self.physical_device,
+                &self.device,
+                self.command_pool,
+                self.graphics_queue,
+                &mesh.indices,
+            )?;
+
+            // Store in registry
+            self.custom_meshes.insert(
+                path.to_string(),
+                (mesh, vertex_buffer, vertex_memory, index_buffer, index_memory),
+            );
+
+            println!("Custom mesh loaded successfully: {}", path);
+            Ok(())
+        }
+
         unsafe fn create_uniform_buffers(
             instance: &ash::Instance,
             physical_device: vk::PhysicalDevice,
@@ -2100,13 +2311,26 @@ impl VulkanRenderer {
             // CRITICAL: Use the EXACT SAME projection matrix as gizmo and picking!
             let aspect = self.swapchain_extent.width as f32 / self.swapchain_extent.height as f32;
             let proj = game.camera.projection_matrix(aspect);
-            
+
+            // Get light direction from scene object rotation, or use default
+            let dir_light_direction = if let Some(light_id) = game.scene.find_by_type(crate::scene::ObjectType::DirectionalLight) {
+                if let Some(light_obj) = game.scene.get_object(light_id) {
+                    // Light arrow points down -Y, rotate it by the object's rotation
+                    let dir = light_obj.transform.rotation * glam::Vec3::NEG_Y;
+                    dir.normalize()
+                } else {
+                    self.directional_light.direction
+                }
+            } else {
+                self.directional_light.direction
+            };
+
             let ubo = UniformBufferObject {
                 view,
                 proj,
                 view_pos: game.get_camera_position(),
                 _padding: 0.0,
-                dir_light_direction: self.directional_light.direction,
+                dir_light_direction,
                 _padding2: 0.0,
                 dir_light_color: self.directional_light.color,
                 dir_light_intensity: self.directional_light.intensity,
@@ -2254,6 +2478,18 @@ impl VulkanRenderer {
         }
 
         pub fn render(&mut self, game: &mut crate::game::Game) -> anyhow::Result<()> {
+            // Load any new custom meshes
+            unsafe {
+                let mesh_objects = game.get_visible_meshes();
+                for (mesh_path, _) in mesh_objects.iter() {
+                    if !self.custom_meshes.contains_key(mesh_path) {
+                        if let Err(e) = self.load_custom_mesh(mesh_path) {
+                            eprintln!("Failed to load mesh {}: {}", mesh_path, e);
+                        }
+                    }
+                }
+            }
+
             // Frame rate limiting to 120 FPS
             let target_frame_time = std::time::Duration::from_secs_f64(1.0 / 120.0);
             let elapsed = self.last_frame_time.elapsed();
@@ -2261,7 +2497,7 @@ impl VulkanRenderer {
                 std::thread::sleep(target_frame_time - elapsed);
             }
             self.last_frame_time = std::time::Instant::now();
-            
+
             unsafe {
                 self.device.wait_for_fences(
                     &[self.in_flight_fences[self.current_frame]],
@@ -2454,19 +2690,75 @@ impl VulkanRenderer {
 
                 // Render each cube with its own model matrix via push constants
                 for model_matrix in visible_cubes.iter() {
-                    // Update push constants with this cube's model matrix
-                    let model_array = [*model_matrix];
-                    let push_constants = bytemuck::cast_slice(&model_array);
+                    // Update push constants with model matrix + material
+                    let push_data = MeshPushConstants {
+                        model: *model_matrix,
+                        albedo: game.material.albedo,
+                        metallic: game.material.metallic,
+                        roughness: game.material.roughness,
+                        ao_intensity: game.material.ao_intensity,
+                    };
+                    let push_constants = bytemuck::bytes_of(&push_data);
                     self.device.cmd_push_constants(
                         command_buffer,
                         self.pipeline_layout,
-                        vk::ShaderStageFlags::VERTEX,
+                        vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
                         0,
                         push_constants,
                     );
 
                     // Draw this cube instance
                     self.device.cmd_draw_indexed(command_buffer, indices_per_cube, 1, 0, 0, 0);
+                }
+            }
+
+            // 2.5 Render custom mesh objects (spaceships, etc.)
+            let visible_meshes = game.get_visible_meshes();
+            if !visible_meshes.is_empty() {
+                self.device.cmd_bind_pipeline(
+                    command_buffer,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    self.graphics_pipeline,
+                );
+
+                self.device.cmd_bind_descriptor_sets(
+                    command_buffer,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    self.pipeline_layout,
+                    0,
+                    &[self.descriptor_sets[self.current_frame]],
+                    &[],
+                );
+
+                for (mesh_path, model_matrix) in visible_meshes.iter() {
+                    // Get mesh data from registry
+                    if let Some((mesh, vertex_buffer, _vertex_memory, index_buffer, _index_memory)) = self.custom_meshes.get(mesh_path) {
+                        // Bind this mesh's buffers
+                        let vertex_buffers = [*vertex_buffer];
+                        let offsets = [0];
+                        self.device.cmd_bind_vertex_buffers(command_buffer, 0, &vertex_buffers, &offsets);
+                        self.device.cmd_bind_index_buffer(command_buffer, *index_buffer, 0, vk::IndexType::UINT32);
+
+                        // Update push constants with model matrix + material
+                        let push_data = MeshPushConstants {
+                            model: *model_matrix,
+                            albedo: game.material.albedo,
+                            metallic: game.material.metallic,
+                            roughness: game.material.roughness,
+                            ao_intensity: game.material.ao_intensity,
+                        };
+                        let push_constants = bytemuck::bytes_of(&push_data);
+                        self.device.cmd_push_constants(
+                            command_buffer,
+                            self.pipeline_layout,
+                            vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                            0,
+                            push_constants,
+                        );
+
+                        // Draw this mesh
+                        self.device.cmd_draw_indexed(command_buffer, mesh.indices.len() as u32, 1, 0, 0, 0);
+                    }
                 }
             }
 
@@ -2614,6 +2906,42 @@ impl VulkanRenderer {
                 self.device.cmd_draw_indexed(command_buffer, index_count, 1, 0, 0, 0);
             }
 
+            // 5. Render directional light visualization
+            if let Some(light_transform) = game.get_directional_light() {
+                self.device.cmd_bind_pipeline(
+                    command_buffer,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    self.graphics_pipeline,
+                );
+
+                let vertex_buffers = [self.dir_light_vertex_buffer];
+                let offsets = [0];
+                self.device.cmd_bind_vertex_buffers(command_buffer, 0, &vertex_buffers, &offsets);
+                self.device.cmd_bind_index_buffer(command_buffer, self.dir_light_index_buffer, 0, vk::IndexType::UINT32);
+
+                self.device.cmd_bind_descriptor_sets(
+                    command_buffer,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    self.pipeline_layout,
+                    0,
+                    &[self.descriptor_sets[self.current_frame]],
+                    &[],
+                );
+
+                // Push light transform matrix
+                let model_array = [light_transform];
+                let push_constants = bytemuck::cast_slice(&model_array);
+                self.device.cmd_push_constants(
+                    command_buffer,
+                    self.pipeline_layout,
+                    vk::ShaderStageFlags::VERTEX,
+                    0,
+                    push_constants,
+                );
+
+                self.device.cmd_draw_indexed(command_buffer, self.dir_light_mesh.indices.len() as u32, 1, 0, 0, 0);
+            }
+
             // Render ImGui
             let draw_data = self.imgui_context.render();
             self.imgui_renderer.render(
@@ -2716,10 +3044,15 @@ impl VulkanRenderer {
             
             // Recreate main graphics pipeline with new extent
             self.device.destroy_pipeline(self.graphics_pipeline, None);
+            self.device.destroy_pipeline(self.wireframe_pipeline, None);
             self.device.destroy_pipeline_layout(self.pipeline_layout, None);
             let (pipeline_layout, graphics_pipeline) =
             Self::create_graphics_pipeline(&self.device, swapchain_extent, self.render_pass, self.descriptor_set_layout)?;
-            
+            let wireframe_pipeline = Self::create_wireframe_pipeline(&self.device, swapchain_extent, self.render_pass, pipeline_layout)?;
+            self.pipeline_layout = pipeline_layout;
+            self.graphics_pipeline = graphics_pipeline;
+            self.wireframe_pipeline = wireframe_pipeline;
+
             // Recreate skybox pipeline with new extent
             self.device.destroy_pipeline(self.skybox.pipeline, None);
             self.device.destroy_pipeline_layout(self.skybox.pipeline_layout, None);
@@ -2855,6 +3188,20 @@ impl VulkanRenderer {
                 self.device.destroy_buffer(self.gizmo_vertex_buffer, None);
                 self.device.free_memory(self.gizmo_vertex_buffer_memory, None);
 
+                // Cleanup custom meshes
+                for (_path, (_mesh, vertex_buffer, vertex_memory, index_buffer, index_memory)) in self.custom_meshes.drain() {
+                    self.device.destroy_buffer(vertex_buffer, None);
+                    self.device.free_memory(vertex_memory, None);
+                    self.device.destroy_buffer(index_buffer, None);
+                    self.device.free_memory(index_memory, None);
+                }
+
+                // Cleanup directional light visualization
+                self.device.destroy_buffer(self.dir_light_index_buffer, None);
+                self.device.free_memory(self.dir_light_index_buffer_memory, None);
+                self.device.destroy_buffer(self.dir_light_vertex_buffer, None);
+                self.device.free_memory(self.dir_light_vertex_buffer_memory, None);
+
                 // Cleanup depth sampler
                 self.device.destroy_sampler(self.depth_sampler, None);
 
@@ -2866,6 +3213,7 @@ impl VulkanRenderer {
                 
                 self.device.destroy_command_pool(self.command_pool, None);
                 self.device.destroy_pipeline(self.graphics_pipeline, None);
+                self.device.destroy_pipeline(self.wireframe_pipeline, None);
                 self.device.destroy_pipeline_layout(self.pipeline_layout, None);
                 self.device.destroy_render_pass(self.render_pass, None);
                 

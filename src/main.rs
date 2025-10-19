@@ -2,6 +2,7 @@ mod core;
 mod engine;
 mod renderer;
 mod mesh;
+mod material;
 mod lighting;
 mod game;
 mod imgui_renderer;

@@ -143,6 +143,8 @@ pub struct Game {
     pub config_dirty: bool,
     /// Active notifications
     pub notifications: Vec<Notification>,
+    /// Material properties for mesh rendering
+    pub material: crate::material::MaterialProperties,
 }
 
 impl Game {
@@ -177,6 +179,7 @@ impl Game {
             scene_dirty: false,
             config_dirty: false,
             notifications: Vec::new(),
+            material: crate::material::MaterialProperties::default(),
         }
     }
 
@@ -242,7 +245,12 @@ impl Game {
             &self.scene,
             &self.camera,
         ) {
-            self.scene.select_object(object_id);
+            // If clicking already selected object, focus on it
+            if self.scene.selected_object_id() == Some(object_id) {
+                self.focus_on_object(object_id);
+            } else {
+                self.scene.select_object(object_id);
+            }
         }
     }
 
@@ -404,6 +412,22 @@ impl Game {
             .collect()
     }
 
+    /// Get all visible mesh objects (returns path and model matrix)
+    pub fn get_visible_meshes(&self) -> Vec<(String, Mat4)> {
+        self.scene
+            .objects_sorted()
+            .iter()
+            .filter(|obj| obj.visible)
+            .filter_map(|obj| {
+                if let ObjectType::Mesh(path) = &obj.object_type {
+                    Some((path.clone(), obj.transform.model_matrix()))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
     /// Check if nebula is visible
     pub fn is_nebula_visible(&self) -> bool {
         if let Some(nebula_id) = self.scene.find_by_type(ObjectType::Nebula) {
@@ -422,6 +446,18 @@ impl Game {
             }
         }
         false
+    }
+
+    /// Get directional light transform if visible
+    pub fn get_directional_light(&self) -> Option<Mat4> {
+        if let Some(light_id) = self.scene.find_by_type(ObjectType::DirectionalLight) {
+            if let Some(light) = self.scene.get_object(light_id) {
+                if light.visible {
+                    return Some(light.transform.model_matrix());
+                }
+            }
+        }
+        None
     }
 
     /// Get the current model matrix for the cube (first cube for backwards compatibility)
