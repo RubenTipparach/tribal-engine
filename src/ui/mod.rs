@@ -158,9 +158,10 @@ impl UiManager {
         let mut clicked_obj_id: Option<usize> = None;
         let mut double_clicked_obj_id: Option<usize> = None;
         let mut duplicate_object_id: Option<usize> = None;
+        let mut clicked_material: Option<String> = None;
 
         GuiPanelBuilder::new(ui, "Scene Hierarchy")
-            .size(250.0, 480.0)
+            .size(250.0, 550.0)
             .position(10.0, 10.0)
             .build(|content| {
                 content.text("Select objects to edit");
@@ -312,6 +313,18 @@ impl UiManager {
                     game.reset_camera_up();
                 }
 
+                // Materials section
+                content.separator();
+                content.header("Materials");
+
+                let material_names = game.material_library.material_names();
+                for mat_name in &material_names {
+                    let label = format!("  {}", mat_name);
+                    if ui.selectable(&label) {
+                        clicked_material = Some(mat_name.clone());
+                    }
+                }
+
                 content.separator();
                 let (s, l, _) = content.config_buttons();
                 save_scene_clicked = s;
@@ -334,6 +347,15 @@ impl UiManager {
                 game.scene.select_object(new_id);
                 game.mark_scene_dirty();
             }
+        }
+
+        // Handle material click - open material editor
+        if let Some(mat_name) = clicked_material {
+            game.current_material_name = mat_name.clone();
+            if let Some(mat) = game.material_library.get(&mat_name) {
+                game.material = *mat;
+            }
+            game.material_editor_open = true;
         }
 
         if save_scene_clicked {
@@ -433,13 +455,50 @@ impl UiManager {
         if transform_changed {
             game.mark_scene_dirty();
         }
+    }
 
-        // Material Editor Panel
-        GuiPanelBuilder::new(ui, "Material Editor")
-            .size(250.0, 220.0)
-            .position(630.0, 290.0)
-            .build(|content| {
+    /// Build material editor panel
+    pub fn build_material_editor(ui: &Ui, game: &mut Game) {
+        // Material Editor Panel - only show when open
+        if !game.material_editor_open {
+            return;
+        }
+
+        ui.window("Material Editor")
+            .position([990.0, 10.0], imgui::Condition::FirstUseEver)
+            .size([280.0, 500.0], imgui::Condition::FirstUseEver)
+            .opened(&mut game.material_editor_open)
+            .build(|| {
+                let content = ui;
                 content.text("PBR Material Properties");
+                content.separator();
+
+                // Material name input
+                ui.text("Material Name:");
+                let mut name_buf = game.current_material_name.clone();
+                if ui.input_text("##material_name", &mut name_buf).build() {
+                    game.current_material_name = name_buf;
+                }
+
+                content.separator();
+
+                // Material library dropdown
+                ui.text("Load from Library:");
+                let material_names = game.material_library.material_names();
+                let current_idx = material_names.iter().position(|n| n == &game.current_material_name).unwrap_or(0);
+
+                if let Some(_token) = ui.begin_combo("##material_library", &material_names.get(current_idx).map(|s| s.as_str()).unwrap_or("")) {
+                    for name in &material_names {
+                        let is_selected = name == &game.current_material_name;
+                        if ui.selectable_config(name).selected(is_selected).build() {
+                            if let Some(mat) = game.material_library.get(name) {
+                                game.material = *mat;
+                                game.current_material_name = name.clone();
+                            }
+                        }
+                    }
+                }
+
                 content.separator();
 
                 // Albedo color
@@ -483,6 +542,61 @@ impl UiManager {
                 ui.same_line();
                 if ui.button("Matte") {
                     game.material = crate::material::MaterialProperties::matte(game.material.albedo);
+                }
+
+                content.separator();
+
+                // Save/Delete buttons
+                ui.text("Material Library:");
+                if ui.button("Save Material") {
+                    game.material_library.set(game.current_material_name.clone(), game.material);
+                    if let Err(e) = game.material_library.save("config/materials.json") {
+                        eprintln!("Failed to save material library: {}", e);
+                    } else {
+                        println!("Material '{}' saved to library", game.current_material_name);
+                    }
+                }
+
+                ui.same_line();
+
+                // Can't delete default materials
+                let can_delete = game.current_material_name != "Default"
+                    && game.current_material_name != "Metal"
+                    && game.current_material_name != "Plastic"
+                    && game.current_material_name != "Matte"
+                    && game.material_library.contains(&game.current_material_name);
+
+                ui.disabled(!can_delete, || {
+                    if ui.button("Delete") {
+                        if game.material_library.remove(&game.current_material_name).is_some() {
+                            if let Err(e) = game.material_library.save("config/materials.json") {
+                                eprintln!("Failed to save material library: {}", e);
+                            } else {
+                                println!("Material '{}' deleted from library", game.current_material_name);
+                            }
+                            // Switch to default material after deleting
+                            game.current_material_name = "Default".to_string();
+                            if let Some(mat) = game.material_library.get("Default") {
+                                game.material = *mat;
+                            }
+                        }
+                    }
+                });
+
+                content.separator();
+
+                // Apply to selected object
+                if let Some(selected_obj) = game.scene.selected_object() {
+                    ui.text(format!("Selected: {}", selected_obj.name));
+                    if ui.button("Apply to Selected Object") {
+                        if let Some(obj) = game.scene.selected_object_mut() {
+                            obj.material = Some(game.current_material_name.clone());
+                            game.scene_dirty = true;
+                            println!("Applied material '{}' to '{}'", game.current_material_name, obj.name);
+                        }
+                    }
+                } else {
+                    ui.text_disabled("No object selected");
                 }
             });
     }
@@ -596,15 +710,18 @@ impl UiManager {
         Self::build_scene_hierarchy(&ui, game);
         Self::build_transform_editor(&ui, game);
 
+        // Show material editor if open
+        Self::build_material_editor(&ui, game);
+
         // Show object-specific panels ONLY when that object is selected
         let selected_type = game.scene.selected_object().map(|obj| obj.object_type.clone());
 
         match selected_type {
             Some(ObjectType::Skybox) => Self::build_skybox_settings(&ui, game),
             Some(ObjectType::Nebula) => Self::build_nebula_settings(&ui, game),
-            Some(ObjectType::Cube) => {
-                // Cube has no extra properties beyond transform
-                // Transform editor is enough
+            Some(ObjectType::Cube) | Some(ObjectType::Mesh(_)) => {
+                // Mesh/Cube objects can use materials but have no extra settings panel
+                // Material editor is accessed via Materials section in hierarchy
             }
             None => {
                 // Nothing selected - don't show any config panels
@@ -684,6 +801,10 @@ impl UiManager {
                 eprintln!("Failed to load config file: {}, using defaults", e);
             }
         }
+
+        // Load material library
+        game.material_library = crate::material_library::MaterialLibrary::load_or_default("config/materials.json");
+        println!("Material library loaded");
     }
 
     /// Save all current configs to file

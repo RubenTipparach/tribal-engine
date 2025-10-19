@@ -7,7 +7,7 @@ use imgui::Context;
 
 use crate::mesh::{Mesh, Vertex};
 use crate::material::MaterialProperties;
-use crate::lighting::{DirectionalLight, PointLight};
+use crate::core::lighting::{DirectionalLight, PointLight};
 use crate::imgui_renderer::ImGuiRenderer;
 use crate::background::{SkyboxRenderer, SkyboxUniformBufferObject};
 use crate::ui::UiManager;
@@ -1055,8 +1055,8 @@ impl VulkanRenderer {
             descriptor_set_layout: vk::DescriptorSetLayout,
         ) -> anyhow::Result<(vk::PipelineLayout, vk::Pipeline)> {
             // Shader code will be compiled from GLSL
-            let vert_shader_code = include_bytes!("../shaders/mesh.vert.spv");
-            let frag_shader_code = include_bytes!("../shaders/mesh.frag.spv");
+            let vert_shader_code = include_bytes!("../../shaders/mesh.vert.spv");
+            let frag_shader_code = include_bytes!("../../shaders/mesh.frag.spv");
             
             let vert_shader_module = Self::create_shader_module(device, vert_shader_code)?;
             let frag_shader_module = Self::create_shader_module(device, frag_shader_code)?;
@@ -1177,8 +1177,8 @@ impl VulkanRenderer {
             render_pass: vk::RenderPass,
             pipeline_layout: vk::PipelineLayout, // Reuse same layout as graphics pipeline
         ) -> anyhow::Result<vk::Pipeline> {
-            let vert_shader_code = include_bytes!("../shaders/wireframe.vert.spv");
-            let frag_shader_code = include_bytes!("../shaders/wireframe.frag.spv");
+            let vert_shader_code = include_bytes!("../../shaders/wireframe.vert.spv");
+            let frag_shader_code = include_bytes!("../../shaders/wireframe.frag.spv");
 
             let vert_shader_module = Self::create_shader_module(device, vert_shader_code)?;
             let frag_shader_module = Self::create_shader_module(device, frag_shader_code)?;
@@ -1302,8 +1302,8 @@ impl VulkanRenderer {
             render_pass: vk::RenderPass,
             descriptor_set_layout: vk::DescriptorSetLayout,
         ) -> anyhow::Result<(vk::PipelineLayout, vk::Pipeline)> {
-            let vert_shader_code = include_bytes!("../shaders/skybox.vert.spv");
-            let frag_shader_code = include_bytes!("../shaders/skybox_starry.frag.spv");
+            let vert_shader_code = include_bytes!("../../shaders/skybox.vert.spv");
+            let frag_shader_code = include_bytes!("../../shaders/skybox_starry.frag.spv");
 
             let vert_shader_module = Self::create_shader_module(device, vert_shader_code)?;
             let frag_shader_module = Self::create_shader_module(device, frag_shader_code)?;
@@ -1417,8 +1417,8 @@ impl VulkanRenderer {
             render_pass: vk::RenderPass,
             descriptor_set_layout: vk::DescriptorSetLayout,
         ) -> anyhow::Result<(vk::PipelineLayout, vk::Pipeline)> {
-            let vert_shader_code = include_bytes!("../shaders/gizmo.vert.spv");
-            let frag_shader_code = include_bytes!("../shaders/gizmo.frag.spv");
+            let vert_shader_code = include_bytes!("../../shaders/gizmo.vert.spv");
+            let frag_shader_code = include_bytes!("../../shaders/gizmo.frag.spv");
 
             let vert_shader_module = Self::create_shader_module(device, vert_shader_code)?;
             let frag_shader_module = Self::create_shader_module(device, frag_shader_code)?;
@@ -1560,8 +1560,8 @@ impl VulkanRenderer {
             render_pass: vk::RenderPass,
             descriptor_set_layout: vk::DescriptorSetLayout,
         ) -> anyhow::Result<(vk::PipelineLayout, vk::Pipeline)> {
-            let vert_shader_code = include_bytes!("../shaders/nebula.vert.spv");
-            let frag_shader_code = include_bytes!("../shaders/nebula.frag.spv");
+            let vert_shader_code = include_bytes!("../../shaders/nebula.vert.spv");
+            let frag_shader_code = include_bytes!("../../shaders/nebula.frag.spv");
             
             let vert_shader_module = Self::create_shader_module(device, vert_shader_code)?;
             let frag_shader_module = Self::create_shader_module(device, frag_shader_code)?;
@@ -2906,12 +2906,12 @@ impl VulkanRenderer {
                 self.device.cmd_draw_indexed(command_buffer, index_count, 1, 0, 0, 0);
             }
 
-            // 5. Render directional light visualization
+            // 5. Render directional light visualization (yellow wireframe)
             if let Some(light_transform) = game.get_directional_light() {
                 self.device.cmd_bind_pipeline(
                     command_buffer,
                     vk::PipelineBindPoint::GRAPHICS,
-                    self.graphics_pipeline,
+                    self.wireframe_pipeline,
                 );
 
                 let vertex_buffers = [self.dir_light_vertex_buffer];

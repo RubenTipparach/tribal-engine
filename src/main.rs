@@ -1,9 +1,8 @@
 mod core;
 mod engine;
-mod renderer;
 mod mesh;
 mod material;
-mod lighting;
+mod material_library;
 mod game;
 mod imgui_renderer;
 mod background;

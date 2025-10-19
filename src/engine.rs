@@ -4,7 +4,7 @@ use winit::{
     window::WindowBuilder,
     keyboard::{KeyCode, PhysicalKey},
 };
-use crate::renderer::VulkanRenderer;
+use crate::core::renderer::VulkanRenderer;
 use crate::game::Game;
 use crate::ui::UiManager;
 use std::collections::HashSet;

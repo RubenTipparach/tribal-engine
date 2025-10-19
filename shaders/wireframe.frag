@@ -9,7 +9,7 @@ void main() {
     vec3 N = normalize(fragNormal);
     float intensity = abs(N.y) * 0.3 + 0.7; // Vary brightness based on normal
 
-    // Cyan/green wireframe color
-    vec3 wireColor = vec3(0.0, 1.0, 0.8) * intensity;
+    // Yellow wireframe color
+    vec3 wireColor = vec3(1.0, 1.0, 0.0) * intensity;
     outColor = vec4(wireColor, 1.0);
 }

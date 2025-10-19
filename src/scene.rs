@@ -80,6 +80,8 @@ pub struct SceneObject {
     pub object_type: ObjectType,
     pub transform: Transform,
     pub visible: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub material: Option<String>, // Name of material from material library
 }
 
 impl SceneObject {
@@ -90,6 +92,7 @@ impl SceneObject {
             object_type,
             transform: Transform::default(),
             visible: true,
+            material: None,
         }
     }
 

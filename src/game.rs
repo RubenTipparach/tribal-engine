@@ -145,6 +145,12 @@ pub struct Game {
     pub notifications: Vec<Notification>,
     /// Material properties for mesh rendering
     pub material: crate::material::MaterialProperties,
+    /// Material library
+    pub material_library: crate::material_library::MaterialLibrary,
+    /// Current material name being edited
+    pub current_material_name: String,
+    /// Material editor visibility
+    pub material_editor_open: bool,
 }
 
 impl Game {
@@ -180,6 +186,9 @@ impl Game {
             config_dirty: false,
             notifications: Vec::new(),
             material: crate::material::MaterialProperties::default(),
+            material_library: crate::material_library::MaterialLibrary::default(),
+            current_material_name: "New Material".to_string(),
+            material_editor_open: false,
         }
     }
 
