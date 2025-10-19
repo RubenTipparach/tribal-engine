@@ -120,6 +120,51 @@ impl<'a> GuiContentBuilder<'a> {
         self.ui.spacing();
         self
     }
+
+    /// Input field for f32 values (unbounded)
+    pub fn input_f32(&mut self, label: &str, value: &mut f32) -> &mut Self {
+        self.ui.input_float(label, value).build();
+        self
+    }
+
+    /// Input field for Vec3 values
+    pub fn input_vec3(&mut self, label: &str, value: &mut Vec3) -> &mut Self {
+        let mut arr = [value.x, value.y, value.z];
+        if self.ui.input_float3(label, &mut arr).build() {
+            *value = Vec3::new(arr[0], arr[1], arr[2]);
+        }
+        self
+    }
+
+    /// Input for angles with wrap-around (in degrees)
+    pub fn input_angle(&mut self, label: &str, value_deg: &mut f32) -> &mut Self {
+        self.ui.input_float(label, value_deg).build();
+
+        // Wrap angle to -180..180 range
+        while *value_deg > 180.0 {
+            *value_deg -= 360.0;
+        }
+        while *value_deg < -180.0 {
+            *value_deg += 360.0;
+        }
+
+        self
+    }
+
+    /// Add save/load/reset button group for config management
+    /// Returns (save_clicked, load_clicked, reset_clicked)
+    pub fn config_buttons(&mut self) -> (bool, bool, bool) {
+        self.ui.separator();
+        self.ui.spacing();
+
+        let save_clicked = self.ui.button("Save Config");
+        self.ui.same_line();
+        let load_clicked = self.ui.button("Load Config");
+        self.ui.same_line();
+        let reset_clicked = self.ui.button("Reset to Default");
+
+        (save_clicked, load_clicked, reset_clicked)
+    }
 }
 
 /// Specialized builder for skybox FX controls

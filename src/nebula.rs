@@ -24,6 +24,42 @@ pub struct NebulaConfig {
     pub max_distance: f32,
 }
 
+impl From<crate::config::NebulaConfigData> for NebulaConfig {
+    fn from(data: crate::config::NebulaConfigData) -> Self {
+        Self {
+            zoom: data.zoom,
+            density: data.density,
+            brightness: data.brightness,
+            scale: data.scale,
+            color_center: data.color_center,
+            color_edge: data.color_edge,
+            color_density_low: data.color_density_low,
+            color_density_high: data.color_density_high,
+            light_color: data.light_color,
+            light_intensity: data.light_intensity,
+            max_distance: data.max_distance,
+        }
+    }
+}
+
+impl From<&NebulaConfig> for crate::config::NebulaConfigData {
+    fn from(config: &NebulaConfig) -> Self {
+        Self {
+            zoom: config.zoom,
+            density: config.density,
+            brightness: config.brightness,
+            scale: config.scale,
+            color_center: config.color_center,
+            color_edge: config.color_edge,
+            color_density_low: config.color_density_low,
+            color_density_high: config.color_density_high,
+            light_color: config.light_color,
+            light_intensity: config.light_intensity,
+            max_distance: config.max_distance,
+        }
+    }
+}
+
 impl Default for NebulaConfig {
     fn default() -> Self {
         Self {

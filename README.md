@@ -1,11 +1,13 @@
 # Tribal Engine
 
-A Rust + Vulkan game engine featuring:
+A forward-rendered Vulkan game engine featuring:
+- **Scene graph system** with object selection and transforms
 - **Procedurally generated raymarched SDF nebula** rendering
 - **Traditional polygon mesh rendering** with OBJ file support
-- **PBR (Physically Based Rendering)** lit material shaders
+- **PBR (Physically Based Rendering)** material system
 - **Directional and point light** sources
-- Procedural cube mesh generation for testing
+- **ImGui** integration for runtime tweaking
+- **Persistent JSON configuration** for all engine parameters and scene data
 
 ## Prerequisites
 
@@ -50,29 +52,45 @@ tribal-engine/
 ├── src/
 │   ├── main.rs              # Entry point
 │   ├── engine.rs            # Core engine loop and window management
+│   ├── game.rs              # Game state and logic
 │   ├── renderer.rs          # Vulkan renderer implementation
-│   ├── mesh.rs              # Mesh data structures and generation
+│   ├── mesh.rs              # Mesh data structures and OBJ loader
 │   ├── lighting.rs          # Lighting system (directional/point lights)
-│   └── raymarcher.rs        # SDF raymarching configuration
+│   ├── nebula.rs            # SDF nebula rendering
+│   ├── background.rs        # Skybox rendering
+│   ├── scene.rs             # Scene graph and transform system
+│   ├── config.rs            # JSON configuration persistence
+│   ├── core/                # Core Vulkan abstractions
+│   │   ├── camera.rs        # Camera system
+│   │   └── ...
+│   └── ui/                  # ImGui integration
+│       ├── mod.rs           # UI manager and panels
+│       └── gui_builder.rs   # ImGui helper widgets
 ├── shaders/
 │   ├── mesh.vert            # Mesh vertex shader
-│   ├── mesh.frag            # PBR fragment shader for meshes
-│   ├── raymarch.vert        # Raymarching fullscreen quad vertex shader
-│   └── raymarch.frag        # SDF nebula raymarching fragment shader
+│   ├── mesh.frag            # PBR fragment shader
+│   ├── nebula.vert          # Nebula vertex shader
+│   ├── nebula.frag          # SDF raymarching fragment shader
+│   ├── skybox.vert          # Skybox vertex shader
+│   ├── skybox.frag          # Skybox fragment shader
+│   ├── imgui.vert           # ImGui vertex shader
+│   └── imgui.frag           # ImGui fragment shader
+├── config/
+│   ├── default.json         # Engine settings (camera, nebula, skybox)
+│   └── scene.json           # Scene objects and transforms
 └── Cargo.toml
 ```
 
 ## Features
 
 ### Mesh Rendering
-- Procedural cube generation with proper normals and UVs
+- OBJ file loader with proper vertex/normal/UV support
+- Procedural mesh generation (cube, inverted sphere)
 - Vertex/Index buffer management
-- OBJ file loading support (via `tobj` crate)
-- PBR material shading with:
-  - Albedo
+- PBR material shading:
   - Metallic/Roughness workflow
-  - Normal mapping support
   - Cook-Torrance BRDF
+  - Normal mapping ready
 
 ### Lighting System
 - **Directional Light**: Sun-like directional lighting with color and intensity
@@ -83,28 +101,109 @@ tribal-engine/
   - Fresnel-Schlick approximation
 
 ### Raymarched SDF Nebula
-- Procedural nebula generation using signed distance fields
-- Fractal Brownian Motion (FBM) for organic noise
-- Configurable parameters:
-  - Octaves, lacunarity, gain, frequency
-  - Primary and secondary colors
-  - Density control
-- Atmospheric scattering
-- Volumetric rendering
-- Starfield background
+- Procedural volumetric nebula using signed distance fields
+- Configurable colors, density, brightness, and scale
+- Real-time parameter tweaking via ImGui
 
-### Vulkan Features
-- Modern Vulkan 1.2 API usage
-- Proper synchronization with semaphores and fences
-- Swapchain with mailbox presentation mode
-- Depth testing
+### Skybox System
+- Inverted sphere mesh for skybox rendering
+- Procedural starfield with configurable density
+- Nebula clouds with primary/secondary colors
+- Background brightness control
+
+### Scene Graph & Transform System
+- Hierarchical scene organization with selection
+- Per-object transforms (position, rotation, scale)
+- Scene Hierarchy panel for object selection
+- Transform editor for modifying objects
+- Visibility toggles per object
+- Scene persistence in `config/scene.json`
+
+### Configuration System
+- JSON-based persistence for all engine parameters
+- Separation of concerns:
+  - `config/default.json` - Engine settings (nebula, skybox, camera)
+  - `config/scene.json` - Scene objects and transforms
+- Save/Load buttons in ImGui panels
+- Easy benchmarking by reverting to defaults
+- All configs stored in source control
+
+### Vulkan Renderer
+- Forward rendering pipeline
+- Depth testing and proper blending
 - Command buffer management
 - Descriptor sets for uniform buffers
 - Validation layers in debug mode
 
 ## Controls
 
-Currently, the engine renders a spinning cube with the lighting setup. Camera controls can be added as needed.
+- **WASD**: Camera movement
+- **Right Mouse + Drag**: Look around
+- **ImGui Panels**:
+  - **Scene Hierarchy**: Select objects to edit
+  - **Transform**: Edit position, rotation, scale of selected object
+  - **Nebula Settings**: Appears when nebula selected
+  - **Skybox Settings**: Appears when skybox selected
+  - **Save/Load buttons**: Persist your changes
+
+## Configuration Files
+
+All JSON files are stored in the `config/` directory at the project root.
+
+### `config/default.json` - Engine Settings
+
+Object-specific properties that extend beyond basic transforms:
+
+```json
+{
+  "nebula": {
+    "zoom": 0.01,
+    "density": 2.0,
+    "brightness": 1.0,
+    "scale": 20.0,
+    "color_center": { "x": 5.6, "y": 7.0, "z": 7.0 },
+    ...
+  },
+  "skybox": {
+    "star_density": 2.0,
+    "star_brightness": 3.0,
+    ...
+  },
+  "camera": {
+    "position": { "x": 0.0, "y": 2.0, "z": 5.0 },
+    "pitch": 0.0,
+    "yaw": 0.0,
+    "roll": 0.0,
+    "fov": 70.0,
+    ...
+  }
+}
+```
+
+### `config/scene.json` - Scene Objects
+
+Basic transforms for all objects in the scene:
+
+```json
+{
+  "objects": [
+    {
+      "id": 0,
+      "name": "Cube",
+      "object_type": "Cube",
+      "transform": {
+        "position": { "x": 0.0, "y": 0.0, "z": 0.0 },
+        "rotation": { "x": 0.0, "y": 0.0, "z": 0.0, "w": 1.0 },
+        "scale": { "x": 1.0, "y": 1.0, "z": 1.0 }
+      },
+      "visible": true
+    },
+    ...
+  ]
+}
+```
+
+**Design Philosophy**: Objects with only position/rotation/scale are saved in `scene.json`. Objects with additional properties (like nebula colors, skybox settings) have their extended properties saved in `default.json`.
 
 ## Extending the Engine
 
@@ -116,19 +215,28 @@ use crate::mesh::Mesh;
 let mesh = Mesh::from_obj("path/to/model.obj")?;
 ```
 
-### Adjusting Nebula Parameters
+### Configuring Engine Parameters
 
-Modify the nebula configuration in `raymarcher.rs`:
+All parameters can be tweaked via ImGui and saved to JSON files:
 
 ```rust
+// Nebula parameters
 pub struct NebulaConfig {
-    pub octaves: u32,          // Number of noise octaves (default: 6)
-    pub lacunarity: f32,       // Frequency multiplier (default: 2.0)
-    pub gain: f32,             // Amplitude multiplier (default: 0.5)
-    pub frequency: f32,        // Base frequency (default: 1.0)
-    pub color_primary: Vec3,   // Primary nebula color
-    pub color_secondary: Vec3, // Secondary nebula color
-    pub density: f32,          // Nebula density (default: 0.5)
+    pub zoom: f32,
+    pub density: f32,
+    pub brightness: f32,
+    pub scale: f32,
+    pub color_center: Vec3,
+    pub color_edge: Vec3,
+    // ... and more
+}
+
+// Skybox parameters
+pub struct SkyboxConfig {
+    pub star_density: f32,
+    pub star_brightness: f32,
+    pub nebula_intensity: f32,
+    // ... and more
 }
 ```
 
@@ -149,15 +257,11 @@ let point_lights = vec![
 
 ## Future Enhancements
 
-- [ ] Raymarched nebula rendering integrated with mesh pipeline
-- [ ] Camera controls (WASD movement, mouse look)
 - [ ] Texture loading and binding
 - [ ] Shadow mapping
-- [ ] Deferred rendering pipeline
 - [ ] Entity component system
 - [ ] Physics integration
-- [ ] ImGui integration for runtime parameter tweaking
-- [ ] Multi-pass rendering for post-processing effects
+- [ ] Post-processing effects
 - [ ] Compute shader support
 
 ## Technical Details

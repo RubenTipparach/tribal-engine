@@ -6,6 +6,7 @@ use winit::{
 };
 use crate::renderer::VulkanRenderer;
 use crate::game::Game;
+use crate::ui::UiManager;
 use std::collections::HashSet;
 
 pub struct Engine {
@@ -18,7 +19,9 @@ struct GameState {
     last_update_time: std::time::Instant,
     pressed_keys: HashSet<KeyCode>,
     mouse_delta: (f64, f64),
+    mouse_position: (f64, f64),
     right_mouse_pressed: bool,
+    left_mouse_pressed: bool,
     camera_speed: f32,
 }
 
@@ -39,12 +42,20 @@ impl Engine {
     }
 
     pub fn run(mut self) -> anyhow::Result<()> {
+        let mut game = Game::new();
+
+        // Load configs and scene from files
+        UiManager::load_all_configs(&mut game);
+        UiManager::load_scene_on_startup(&mut game);
+
         let mut game_state = GameState {
-            game: Game::new(),
+            game,
             last_update_time: std::time::Instant::now(),
             pressed_keys: HashSet::new(),
             mouse_delta: (0.0, 0.0),
+            mouse_position: (0.0, 0.0),
             right_mouse_pressed: false,
+            left_mouse_pressed: false,
             camera_speed: 5.0,
         };
 
@@ -67,9 +78,39 @@ impl Engine {
                     target.exit();
                 }
                 Event::WindowEvent {
+                    event: WindowEvent::CursorMoved { position, .. },
+                    ..
+                } => {
+                    game_state.mouse_position = (position.x, position.y);
+
+                    // Update hover state if not using ImGui
+                    if !self.renderer.imgui_wants_mouse() && !game_state.game.gizmo_state.using_gizmo {
+                        let window_size = self.renderer.window().inner_size();
+                        game_state.game.handle_mouse_hover(
+                            position.x as f32,
+                            position.y as f32,
+                            window_size.width as f32,
+                            window_size.height as f32,
+                        );
+                    }
+                }
+                Event::WindowEvent {
                     event: WindowEvent::MouseInput { state, button, .. },
                     ..
                 } => {
+                    // Handle left mouse for object selection
+                    if button == MouseButton::Left && state == ElementState::Pressed {
+                        if !self.renderer.imgui_wants_mouse() && !game_state.game.gizmo_state.using_gizmo {
+                            let window_size = self.renderer.window().inner_size();
+                            game_state.game.handle_mouse_click(
+                                game_state.mouse_position.0 as f32,
+                                game_state.mouse_position.1 as f32,
+                                window_size.width as f32,
+                                window_size.height as f32,
+                            );
+                        }
+                    }
+
                     // Only handle right mouse button for camera control if ImGui isn't using the mouse
                     if button == MouseButton::Right && !self.renderer.imgui_wants_mouse() {
                         match state {

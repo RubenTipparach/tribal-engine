@@ -1,6 +1,8 @@
 use glam::{Mat4, Quat, Vec3};
 use crate::nebula::NebulaConfig;
 use crate::core::Camera;
+use crate::scene::{SceneGraph, ObjectType};
+use crate::gizmo::{GizmoState, ObjectPicker};
 
 /// Skybox configuration
 #[derive(Clone)]
@@ -17,6 +19,32 @@ pub struct SkyboxConfig {
     pub nebula_intensity: f32,
     /// Background darkness (0.0 = black, 1.0 = lighter)
     pub background_brightness: f32,
+}
+
+impl From<crate::config::SkyboxConfigData> for SkyboxConfig {
+    fn from(data: crate::config::SkyboxConfigData) -> Self {
+        Self {
+            star_density: data.star_density,
+            star_brightness: data.star_brightness,
+            nebula_primary_color: data.nebula_primary_color,
+            nebula_secondary_color: data.nebula_secondary_color,
+            nebula_intensity: data.nebula_intensity,
+            background_brightness: data.background_brightness,
+        }
+    }
+}
+
+impl From<&SkyboxConfig> for crate::config::SkyboxConfigData {
+    fn from(config: &SkyboxConfig) -> Self {
+        Self {
+            star_density: config.star_density,
+            star_brightness: config.star_brightness,
+            nebula_primary_color: config.nebula_primary_color,
+            nebula_secondary_color: config.nebula_secondary_color,
+            nebula_intensity: config.nebula_intensity,
+            background_brightness: config.background_brightness,
+        }
+    }
 }
 
 impl Default for SkyboxConfig {
@@ -38,16 +66,16 @@ pub struct Game {
     time: f32,
     /// Camera
     pub camera: Camera,
-    /// Spaceship position
-    pub ship_position: Vec3,
-    /// Spaceship rotation (quaternion)
-    pub ship_rotation: Quat,
-    /// Spaceship velocity
+    /// Scene graph with all objects
+    pub scene: SceneGraph,
+    /// Gizmo state for 3D manipulation
+    pub gizmo_state: GizmoState,
+    /// Object picker for mouse selection
+    pub object_picker: ObjectPicker,
+    /// Spaceship velocity (for physics simulation)
     ship_velocity: Vec3,
-    /// Spaceship angular velocity
+    /// Spaceship angular velocity (for physics simulation)
     ship_angular_velocity: Vec3,
-    /// Ship scale
-    pub ship_scale: Vec3,
     /// Movement speed
     move_speed: f32,
     /// Rotation speed
@@ -56,59 +84,100 @@ pub struct Game {
     pub skybox_config: SkyboxConfig,
     /// Nebula configuration
     pub nebula_config: NebulaConfig,
-    /// Show cube mesh
-    pub show_cube: bool,
 }
 
 impl Game {
     pub fn new() -> Self {
+        let mut scene = SceneGraph::new();
+
+        // Add default scene objects
+        scene.add_object("Cube".to_string(), ObjectType::Cube);
+        scene.add_object("Nebula".to_string(), ObjectType::Nebula);
+        scene.add_object("Skybox".to_string(), ObjectType::Skybox);
+
         Self {
             time: 0.0,
             camera: Camera::default(),
-            ship_position: Vec3::ZERO,
-            ship_rotation: Quat::IDENTITY,
+            scene,
+            gizmo_state: GizmoState::new(),
+            object_picker: ObjectPicker::new(),
             ship_velocity: Vec3::ZERO,
             ship_angular_velocity: Vec3::ZERO,
-            ship_scale: Vec3::ONE,
             move_speed: 5.0,
             rotation_speed: 2.0,
             skybox_config: SkyboxConfig::default(),
             nebula_config: NebulaConfig::default(),
-            show_cube: true,
+        }
+    }
+
+    /// Handle mouse hover for object picking
+    pub fn handle_mouse_hover(&mut self, mouse_x: f32, mouse_y: f32, viewport_width: f32, viewport_height: f32) {
+        self.object_picker.pick_object(
+            mouse_x,
+            mouse_y,
+            viewport_width,
+            viewport_height,
+            &self.scene,
+            &self.camera,
+        );
+    }
+
+    /// Handle mouse click for object selection
+    pub fn handle_mouse_click(&mut self, mouse_x: f32, mouse_y: f32, viewport_width: f32, viewport_height: f32) {
+        if let Some(object_id) = self.object_picker.pick_object(
+            mouse_x,
+            mouse_y,
+            viewport_width,
+            viewport_height,
+            &self.scene,
+            &self.camera,
+        ) {
+            self.scene.select_object(object_id);
         }
     }
     
     /// Update game logic
     pub fn update(&mut self, delta_time: f32) {
         self.time += delta_time;
-        
-        // Apply angular velocity
-        let delta_rotation = Quat::from_euler(
-            glam::EulerRot::XYZ,
-            self.ship_angular_velocity.x * delta_time,
-            self.ship_angular_velocity.y * delta_time,
-            self.ship_angular_velocity.z * delta_time,
-        );
-        self.ship_rotation = (self.ship_rotation * delta_rotation).normalize();
-        
-        // Apply velocity with damping
-        self.ship_position += self.ship_velocity * delta_time;
+
+        // Update cube object if it exists
+        if let Some(cube_id) = self.scene.find_by_type(ObjectType::Cube) {
+            if let Some(cube) = self.scene.get_object_mut(cube_id) {
+                // Apply angular velocity to cube
+                let delta_rotation = Quat::from_euler(
+                    glam::EulerRot::XYZ,
+                    self.ship_angular_velocity.x * delta_time,
+                    self.ship_angular_velocity.y * delta_time,
+                    self.ship_angular_velocity.z * delta_time,
+                );
+                cube.transform.rotation = (cube.transform.rotation * delta_rotation).normalize();
+
+                // Apply velocity with damping
+                cube.transform.position += self.ship_velocity * delta_time;
+            }
+        }
+
         self.ship_velocity *= 0.98; // Air resistance
         self.ship_angular_velocity *= 0.95; // Angular damping
-        
-        // You can add more game logic here:
-        // - Collision detection
-        // - Physics simulation
-        // - etc.
     }
-    
-    /// Get the current model matrix for the spaceship
+
+    /// Get the current model matrix for the cube
     pub fn get_cube_model_matrix(&self) -> Mat4 {
-        let translation = Mat4::from_translation(self.ship_position);
-        let rotation = Mat4::from_quat(self.ship_rotation);
-        let scale = Mat4::from_scale(self.ship_scale);
-        
-        translation * rotation * scale
+        if let Some(cube_id) = self.scene.find_by_type(ObjectType::Cube) {
+            if let Some(cube) = self.scene.get_object(cube_id) {
+                return cube.transform.model_matrix();
+            }
+        }
+        Mat4::IDENTITY
+    }
+
+    /// Check if cube is visible
+    pub fn is_cube_visible(&self) -> bool {
+        self.scene
+            .find_by_type(ObjectType::Cube)
+            .and_then(|id| self.scene.get_object(id))
+            .map(|obj| obj.visible)
+            .unwrap_or(false)
     }
     
     /// Get camera view matrix
@@ -137,8 +206,12 @@ impl Game {
     }
     
     pub fn add_thrust(&mut self, amount: f32) {
-        let forward = self.ship_rotation * Vec3::NEG_Z;
-        self.ship_velocity += forward * amount;
+        if let Some(cube_id) = self.scene.find_by_type(ObjectType::Cube) {
+            if let Some(cube) = self.scene.get_object(cube_id) {
+                let forward = cube.transform.rotation * Vec3::NEG_Z;
+                self.ship_velocity += forward * amount;
+            }
+        }
     }
     
     pub fn add_rotation(&mut self, pitch: f32, yaw: f32, roll: f32) {

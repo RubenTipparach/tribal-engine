@@ -1996,7 +1996,7 @@ impl VulkanRenderer {
             self.device.cmd_draw_indexed(command_buffer, self.skybox.mesh.indices.len() as u32, 1, 0, 0, 0);
             
             // 2. Render solid objects first to populate depth buffer
-            if game.show_cube {
+            if game.is_cube_visible() {
                 self.device.cmd_bind_pipeline(
                     command_buffer,
                     vk::PipelineBindPoint::GRAPHICS,
@@ -2144,7 +2144,9 @@ impl VulkanRenderer {
         }
         
         pub fn build_ui(&mut self, game: &mut crate::game::Game) {
-            UiManager::build_ui(&mut self.imgui_context, game);
+            let viewport_width = self.swapchain_extent.width as f32;
+            let viewport_height = self.swapchain_extent.height as f32;
+            UiManager::build_ui(&mut self.imgui_context, game, viewport_width, viewport_height);
         }
         
         unsafe fn recreate_swapchain(&mut self) -> anyhow::Result<()> {

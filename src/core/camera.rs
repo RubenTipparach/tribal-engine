@@ -175,3 +175,26 @@ impl Default for Camera {
         Self::new(Vec3::new(0.0, 2.0, 5.0))
     }
 }
+
+impl From<crate::config::CameraConfigData> for Camera {
+    fn from(data: crate::config::CameraConfigData) -> Self {
+        let mut camera = Self::new(data.position);
+        camera.set_rotation(data.pitch, data.yaw, data.roll);
+        camera.set_fov(data.fov.to_radians());
+        camera
+    }
+}
+
+impl From<&Camera> for crate::config::CameraConfigData {
+    fn from(camera: &Camera) -> Self {
+        Self {
+            position: camera.position,
+            pitch: camera.pitch,
+            yaw: camera.yaw,
+            roll: camera.roll,
+            move_speed: 5.0, // Default, would need to be stored in Camera if configurable
+            mouse_sensitivity: 0.003, // Default
+            fov: camera.fov.to_degrees(),
+        }
+    }
+}

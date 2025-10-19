@@ -8,6 +8,9 @@ mod imgui_renderer;
 mod background;
 mod ui;
 mod nebula;
+mod config;
+mod scene;
+mod gizmo;
 
 use engine::Engine;
 
