@@ -30,8 +30,8 @@ jobs:
       if: runner.os == 'Linux'
       run: |
         sudo apt-get update
-        sudo apt-get install -y libvulkan-dev vulkan-validationlayers-dev spirv-tools
-        sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libssl-dev
+        sudo apt-get install -y libvulkan-dev vulkan-validationlayers spirv-tools
+        sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libssl-dev libfontconfig1-dev
 
     - name: Cache cargo registry
       uses: actions/cache@v3
@@ -77,8 +77,8 @@ jobs:
       if: runner.os == 'Linux'
       run: |
         sudo apt-get update
-        sudo apt-get install -y libvulkan-dev vulkan-validationlayers-dev spirv-tools
-        sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libssl-dev
+        sudo apt-get install -y libvulkan-dev vulkan-validationlayers spirv-tools
+        sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libssl-dev libfontconfig1-dev
 
     - name: Cache cargo registry
       uses: actions/cache@v3
