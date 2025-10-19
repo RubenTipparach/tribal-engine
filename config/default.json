@@ -33,19 +33,19 @@
     "max_distance": 10.0
   },
   "skybox": {
-    "star_density": 2.305,
-    "star_brightness": 0.678,
+    "star_density": 3.853,
+    "star_brightness": 1.896,
     "nebula_primary_color": {
-      "x": 0.1,
-      "y": 0.2,
-      "z": 0.4
+      "x": 0.0,
+      "y": 0.33333373,
+      "z": 1.0
     },
     "nebula_secondary_color": {
-      "x": 0.6,
-      "y": 0.3,
-      "z": 0.8
+      "x": 0.8,
+      "y": 0.5664093,
+      "z": 0.3
     },
-    "nebula_intensity": 0.038,
+    "nebula_intensity": 0.133,
     "background_brightness": 0.0
   },
   "camera": {

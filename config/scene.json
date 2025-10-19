@@ -6,9 +6,9 @@
       "object_type": "Cube",
       "transform": {
         "position": [
-          14.309382,
+          -7.105397,
           0.023701072,
-          -5.131014
+          4.178734
         ],
         "rotation": [
           0.0,
@@ -142,6 +142,30 @@
           1.0,
           1.0,
           1.0
+        ]
+      },
+      "visible": true
+    },
+    {
+      "id": 6,
+      "name": "Cube Copy",
+      "object_type": "Cube",
+      "transform": {
+        "position": [
+          -4.639641,
+          0.5237011,
+          7.9555707
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          2.7011123,
+          0.8321736,
+          1.8068653
         ]
       },
       "visible": true

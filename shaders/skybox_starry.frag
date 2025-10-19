@@ -1,14 +1,16 @@
 #version 450
 
-// Hardcoded values that work (for testing)
+// Hardcoded values for testing
+/*
 const float starDensity = 2.0;
 const float starBrightness = 3.0;
 const float backgroundBrightness_test = 0.0;
 const vec3 nebulaPrimaryColor_test = vec3(0.3, 0.1, 0.5);    // Purple
 const vec3 nebulaSecondaryColor_test = vec3(0.1, 0.3, 0.6);  // Blue
 const float nebulaIntensity_test = 0.4;
+*/
 
-// UBO matching the Rust struct layout
+// UBO matching the Rust struct layout with correct padding
 layout(binding = 0) uniform UniformBufferObject {
     mat4 model;
     mat4 view;
@@ -18,6 +20,7 @@ layout(binding = 0) uniform UniformBufferObject {
     float starBrightness;
     float pad0;                     // explicit padding to align next vec3
     float pad1;
+    float pad2;                     // need 3 floats (12 bytes) to reach next 16-byte boundary
     vec3 nebulaPrimaryColor;
     float nebulaIntensity;          // follows vec3, fits in padding slot
     vec3 nebulaSecondaryColor;
@@ -121,7 +124,7 @@ vec3 starField(vec3 dir, float density, float brightness) {
 void main() {
     vec3 dir = normalize(fragPosition);
 
-    // Use UBO values for everything
+    // Use UBO values
     vec3 stars = starField(dir, ubo.starDensity, ubo.starBrightness);
 
     vec3 spaceColor = vec3(ubo.backgroundBrightness);

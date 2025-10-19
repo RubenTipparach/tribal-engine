@@ -30,7 +30,7 @@ pub struct SkyboxUniformBufferObject {
     pub view_pos: Vec3,
     pub star_density: f32,           // fills vec3 padding slot
     pub star_brightness: f32,
-    pub _pad0: [f32; 2],             // align next vec3 to 16 bytes
+    pub _pad0: [f32; 3],             // Need 12 bytes to align next vec3 to 16-byte boundary!
     pub nebula_primary_color: Vec3,
     pub nebula_intensity: f32,       // fills vec3 padding slot
     pub nebula_secondary_color: Vec3,
@@ -55,7 +55,7 @@ impl SkyboxRenderer {
             view_pos,
             star_density: config.star_density,
             star_brightness: config.star_brightness,
-            _pad0: [0.0; 2],
+            _pad0: [0.0; 3],
             nebula_primary_color: config.nebula_primary_color,
             nebula_intensity: config.nebula_intensity,
             nebula_secondary_color: config.nebula_secondary_color,
