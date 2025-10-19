@@ -60,6 +60,11 @@ impl<'a> GuiContentBuilder<'a> {
         self
     }
 
+    pub fn text_colored(&mut self, color: [f32; 4], text: &str) -> &mut Self {
+        self.ui.text_colored(color, text);
+        self
+    }
+
     pub fn separator(&mut self) -> &mut Self {
         self.ui.separator();
         self

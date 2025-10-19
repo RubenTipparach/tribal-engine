@@ -29,7 +29,7 @@ impl UiManager {
 
         GuiPanelBuilder::new(ui, "Skybox Settings")
             .size(350.0, 500.0)
-            .position(10.0, 10.0)
+            .position(270.0, 10.0)
             .build(|content| {
                 content.text("Adjust skybox appearance in real-time");
 
@@ -71,7 +71,7 @@ impl UiManager {
 
         GuiPanelBuilder::new(ui, "Nebula Settings")
             .size(380.0, 450.0)
-            .position(370.0, 10.0)
+            .position(270.0, 10.0)
             .build(|content| {
                 content.text("Volumetric nebula raymarch shader");
 
@@ -124,7 +124,7 @@ impl UiManager {
 
         GuiPanelBuilder::new(ui, "Scene Hierarchy")
             .size(250.0, 400.0)
-            .position(10.0, 520.0)
+            .position(10.0, 10.0)
             .build(|content| {
                 content.text("Select objects to edit");
                 content.separator();
@@ -205,14 +205,20 @@ impl UiManager {
         }
     }
 
-    /// Build the transform editor UI for selected object
+    /// Build the transform editor UI for selected object (top-right corner)
     pub fn build_transform_editor(ui: &Ui, game: &mut Game) {
+        let window_width = ui.io().display_size[0];
+        let panel_width = 350.0;
+
         GuiPanelBuilder::new(ui, "Transform")
-            .size(350.0, 320.0)
-            .position(270.0, 520.0)
+            .size(panel_width, 320.0)
+            .position(window_width - panel_width - 10.0, 10.0)
             .build(|content| {
                 if let Some(obj) = game.scene.selected_object_mut() {
-                    content.text(&format!("Editing: {}", obj.name));
+                    // Show selected object name prominently
+                    content.text_colored([0.2, 1.0, 0.2, 1.0], "Selected:");
+                    ui.same_line();
+                    content.text(&obj.name);
                     content.separator();
 
                     // Visibility
@@ -312,38 +318,27 @@ impl UiManager {
             });
     }
 
-    /// Render object hover/selection info overlay
+    /// Render object hover info overlay (only when nothing is selected)
     pub fn render_object_info(ui: &Ui, game: &Game) {
-        // Show hovered object in bottom-left
-        if let Some(hovered_id) = game.object_picker.hovered_object {
-            if let Some(obj) = game.scene.get_object(hovered_id) {
-                ui.window("##hover_overlay")
-                    .position([10.0, ui.io().display_size[1] - 80.0], imgui::Condition::Always)
-                    .size([250.0, 60.0], imgui::Condition::Always)
-                    .no_decoration()
-                    .bg_alpha(0.9)
-                    .build(|| {
-                        ui.text_colored([1.0, 1.0, 0.0, 1.0], "Hovering:");
-                        ui.same_line();
-                        ui.text(&obj.name);
-                        ui.text_disabled("Click to select");
-                    });
+        // Only show hover tooltip if no object is currently selected
+        if game.scene.selected_object().is_none() {
+            if let Some(hovered_id) = game.object_picker.hovered_object {
+                if let Some(obj) = game.scene.get_object(hovered_id) {
+                    ui.window("##hover_overlay")
+                        .position([10.0, ui.io().display_size[1] - 80.0], imgui::Condition::Always)
+                        .size([250.0, 60.0], imgui::Condition::Always)
+                        .no_decoration()
+                        .bg_alpha(0.9)
+                        .build(|| {
+                            ui.text_colored([1.0, 1.0, 0.0, 1.0], "Hovering:");
+                            ui.same_line();
+                            ui.text(&obj.name);
+                            ui.text_disabled("Click to select");
+                        });
+                }
             }
         }
-
-        // Show selected object next to hover info
-        if let Some(selected) = game.scene.selected_object() {
-            ui.window("##selected_overlay")
-                .position([270.0, ui.io().display_size[1] - 80.0], imgui::Condition::Always)
-                .size([200.0, 60.0], imgui::Condition::Always)
-                .no_decoration()
-                .bg_alpha(0.9)
-                .build(|| {
-                    ui.text_colored([0.2, 1.0, 0.2, 1.0], "Selected:");
-                    ui.same_line();
-                    ui.text(&selected.name);
-                });
-        }
+        // Selected object info is now shown in the Transform panel (top-right)
     }
 
     /// Build all UI panels

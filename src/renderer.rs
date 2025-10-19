@@ -11,6 +11,7 @@ use crate::imgui_renderer::ImGuiRenderer;
 use crate::background::{SkyboxRenderer, SkyboxUniformBufferObject};
 use crate::ui::UiManager;
 use crate::nebula::{NebulaRenderer, NebulaUniformBufferObject};
+use crate::gizmo::GizmoMesh;
 
 const MAX_FRAMES_IN_FLIGHT: usize = 2;
 
@@ -38,6 +39,18 @@ pub struct VulkanRenderer {
     skybox: SkyboxRenderer,
     // Nebula
     nebula: NebulaRenderer,
+    // Gizmo
+    gizmo_mesh: Mesh,
+    gizmo_vertex_buffer: vk::Buffer,
+    gizmo_vertex_buffer_memory: vk::DeviceMemory,
+    gizmo_index_buffer: vk::Buffer,
+    gizmo_index_buffer_memory: vk::DeviceMemory,
+    gizmo_descriptor_set_layout: vk::DescriptorSetLayout,
+    gizmo_pipeline_layout: vk::PipelineLayout,
+    gizmo_pipeline: vk::Pipeline,
+    gizmo_uniform_buffers: Vec<vk::Buffer>,
+    gizmo_uniform_buffers_memory: Vec<vk::DeviceMemory>,
+    gizmo_descriptor_sets: Vec<vk::DescriptorSet>,
     framebuffers: Vec<vk::Framebuffer>,
     command_pool: vk::CommandPool,
     command_buffers: Vec<vk::CommandBuffer>,
@@ -86,6 +99,14 @@ struct UniformBufferObject {
     dir_light_intensity: f32,
     point_light_count: u32,
     _padding3: [u32; 3],
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct GizmoUniformBufferObject {
+    model: Mat4,
+    view: Mat4,
+    proj: Mat4,
 }
 
 #[repr(C)]
@@ -345,7 +366,52 @@ impl VulkanRenderer {
                     descriptor_sets: nebula_descriptor_sets,
                 }
             };
-            
+
+            // Create gizmo
+            let (gizmo_vertices, gizmo_indices) = GizmoMesh::generate_translate_arrows();
+            let gizmo_mesh = Mesh {
+                vertices: gizmo_vertices,
+                indices: gizmo_indices,
+            };
+
+            let (gizmo_vertex_buffer, gizmo_vertex_buffer_memory) = Self::create_vertex_buffer(
+                &instance,
+                physical_device,
+                &device,
+                command_pool,
+                graphics_queue,
+                &gizmo_mesh.vertices,
+            )?;
+
+            let (gizmo_index_buffer, gizmo_index_buffer_memory) = Self::create_index_buffer(
+                &instance,
+                physical_device,
+                &device,
+                command_pool,
+                graphics_queue,
+                &gizmo_mesh.indices,
+            )?;
+
+            let gizmo_descriptor_set_layout = Self::create_descriptor_set_layout(&device)?;
+            let (gizmo_pipeline_layout, gizmo_pipeline) =
+            Self::create_gizmo_pipeline(&device, swapchain_extent, render_pass, gizmo_descriptor_set_layout)?;
+
+            let (gizmo_uniform_buffers, gizmo_uniform_buffers_memory) = Self::create_gizmo_uniform_buffers(
+                &instance,
+                physical_device,
+                &device,
+                MAX_FRAMES_IN_FLIGHT,
+            )?;
+
+            let gizmo_descriptor_pool = Self::create_descriptor_pool(&device, MAX_FRAMES_IN_FLIGHT)?;
+            let gizmo_descriptor_sets = Self::create_descriptor_sets(
+                &device,
+                gizmo_descriptor_pool,
+                gizmo_descriptor_set_layout,
+                &gizmo_uniform_buffers,
+                MAX_FRAMES_IN_FLIGHT,
+            )?;
+
             // Create command buffers
             let command_buffers = Self::create_command_buffers(&device, command_pool, MAX_FRAMES_IN_FLIGHT)?;
             
@@ -428,6 +494,17 @@ impl VulkanRenderer {
                 graphics_pipeline,
                 skybox,
                 nebula,
+                gizmo_mesh,
+                gizmo_vertex_buffer,
+                gizmo_vertex_buffer_memory,
+                gizmo_index_buffer,
+                gizmo_index_buffer_memory,
+                gizmo_descriptor_set_layout,
+                gizmo_pipeline_layout,
+                gizmo_pipeline,
+                gizmo_uniform_buffers,
+                gizmo_uniform_buffers_memory,
+                gizmo_descriptor_sets,
                 framebuffers,
                 command_pool,
                 command_buffers,
@@ -1070,6 +1147,126 @@ impl VulkanRenderer {
             Ok((pipeline_layout, pipelines[0]))
         }
 
+        unsafe fn create_gizmo_pipeline(
+            device: &ash::Device,
+            extent: vk::Extent2D,
+            render_pass: vk::RenderPass,
+            descriptor_set_layout: vk::DescriptorSetLayout,
+        ) -> anyhow::Result<(vk::PipelineLayout, vk::Pipeline)> {
+            let vert_shader_code = include_bytes!("../shaders/gizmo.vert.spv");
+            let frag_shader_code = include_bytes!("../shaders/gizmo.frag.spv");
+
+            let vert_shader_module = Self::create_shader_module(device, vert_shader_code)?;
+            let frag_shader_module = Self::create_shader_module(device, frag_shader_code)?;
+
+            let entry_point = CString::new("main")?;
+
+            let vert_stage_info = vk::PipelineShaderStageCreateInfo::default()
+            .stage(vk::ShaderStageFlags::VERTEX)
+            .module(vert_shader_module)
+            .name(&entry_point);
+
+            let frag_stage_info = vk::PipelineShaderStageCreateInfo::default()
+            .stage(vk::ShaderStageFlags::FRAGMENT)
+            .module(frag_shader_module)
+            .name(&entry_point);
+
+            let shader_stages = [vert_stage_info, frag_stage_info];
+
+            let binding_desc = Vertex::get_binding_description();
+            let attribute_desc = Vertex::get_attribute_descriptions();
+
+            let vertex_input_info = vk::PipelineVertexInputStateCreateInfo::default()
+            .vertex_binding_descriptions(std::slice::from_ref(&binding_desc))
+            .vertex_attribute_descriptions(&attribute_desc);
+
+            let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
+            .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
+            .primitive_restart_enable(false);
+
+            let viewport = vk::Viewport {
+                x: 0.0,
+                y: 0.0,
+                width: extent.width as f32,
+                height: extent.height as f32,
+                min_depth: 0.0,
+                max_depth: 1.0,
+            };
+
+            let scissor = vk::Rect2D {
+                offset: vk::Offset2D { x: 0, y: 0 },
+                extent,
+            };
+
+            let viewport_state = vk::PipelineViewportStateCreateInfo::default()
+            .viewports(std::slice::from_ref(&viewport))
+            .scissors(std::slice::from_ref(&scissor));
+
+            let rasterizer = vk::PipelineRasterizationStateCreateInfo::default()
+            .depth_clamp_enable(false)
+            .rasterizer_discard_enable(false)
+            .polygon_mode(vk::PolygonMode::FILL)
+            .line_width(1.0)
+            .cull_mode(vk::CullModeFlags::NONE) // No culling for gizmo
+            .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
+            .depth_bias_enable(false);
+
+            let multisampling = vk::PipelineMultisampleStateCreateInfo::default()
+            .sample_shading_enable(false)
+            .rasterization_samples(vk::SampleCountFlags::TYPE_1);
+
+            // Depth test enabled, write enabled, always show on top
+            let depth_stencil = vk::PipelineDepthStencilStateCreateInfo::default()
+            .depth_test_enable(false) // Disable depth test so gizmo always renders on top
+            .depth_write_enable(false);
+
+            let color_blend_attachment = vk::PipelineColorBlendAttachmentState::default()
+            .color_write_mask(vk::ColorComponentFlags::RGBA)
+            .blend_enable(false);
+
+            let color_blending = vk::PipelineColorBlendStateCreateInfo::default()
+            .logic_op_enable(false)
+            .attachments(std::slice::from_ref(&color_blend_attachment));
+
+            let set_layouts = [descriptor_set_layout];
+
+            // Add push constant for hovered axis
+            let push_constant_range = vk::PushConstantRange::default()
+                .stage_flags(vk::ShaderStageFlags::VERTEX)
+                .offset(0)
+                .size(std::mem::size_of::<i32>() as u32);
+
+            let pipeline_layout_info = vk::PipelineLayoutCreateInfo::default()
+            .set_layouts(&set_layouts)
+            .push_constant_ranges(std::slice::from_ref(&push_constant_range));
+
+            let pipeline_layout = device.create_pipeline_layout(&pipeline_layout_info, None)?;
+
+            let pipeline_info = vk::GraphicsPipelineCreateInfo::default()
+            .stages(&shader_stages)
+            .vertex_input_state(&vertex_input_info)
+            .input_assembly_state(&input_assembly)
+            .viewport_state(&viewport_state)
+            .rasterization_state(&rasterizer)
+            .multisample_state(&multisampling)
+            .depth_stencil_state(&depth_stencil)
+            .color_blend_state(&color_blending)
+            .layout(pipeline_layout)
+            .render_pass(render_pass)
+            .subpass(0);
+
+            let pipelines = device.create_graphics_pipelines(
+                vk::PipelineCache::null(),
+                std::slice::from_ref(&pipeline_info),
+                None,
+            ).map_err(|e| anyhow::anyhow!("Failed to create gizmo pipeline: {:?}", e.1))?;
+
+            device.destroy_shader_module(vert_shader_module, None);
+            device.destroy_shader_module(frag_shader_module, None);
+
+            Ok((pipeline_layout, pipelines[0]))
+        }
+
         unsafe fn create_nebula_descriptor_set_layout(device: &ash::Device) -> anyhow::Result<vk::DescriptorSetLayout> {
             // Binding 0: Uniform buffer
             let ubo_binding = vk::DescriptorSetLayoutBinding::default()
@@ -1417,7 +1614,34 @@ impl VulkanRenderer {
             
             Ok((buffers, memories))
         }
-        
+
+        unsafe fn create_gizmo_uniform_buffers(
+            instance: &ash::Instance,
+            physical_device: vk::PhysicalDevice,
+            device: &ash::Device,
+            count: usize,
+        ) -> anyhow::Result<(Vec<vk::Buffer>, Vec<vk::DeviceMemory>)> {
+            let buffer_size = std::mem::size_of::<GizmoUniformBufferObject>() as vk::DeviceSize;
+
+            let mut buffers = vec![];
+            let mut memories = vec![];
+
+            for _ in 0..count {
+                let (buffer, memory) = Self::create_buffer(
+                    instance,
+                    physical_device,
+                    device,
+                    buffer_size,
+                    vk::BufferUsageFlags::UNIFORM_BUFFER,
+                    vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+                )?;
+                buffers.push(buffer);
+                memories.push(memory);
+            }
+
+            Ok((buffers, memories))
+        }
+
         unsafe fn create_buffer(
             instance: &ash::Instance,
             physical_device: vk::PhysicalDevice,
@@ -1743,10 +1967,10 @@ impl VulkanRenderer {
         unsafe fn update_uniform_buffer(&mut self, image_index: usize, game: &crate::game::Game) -> anyhow::Result<()> {
             let model = game.get_cube_model_matrix();
             let view = game.get_view_matrix();
-            
+
+            // CRITICAL: Use the EXACT SAME projection matrix as gizmo and picking!
             let aspect = self.swapchain_extent.width as f32 / self.swapchain_extent.height as f32;
-            let mut proj = Mat4::perspective_rh(45.0_f32.to_radians(), aspect, 0.1, 100.0);
-            proj.y_axis.y *= -1.0; // Flip Y for Vulkan
+            let proj = game.camera.projection_matrix(aspect);
             
             let ubo = UniformBufferObject {
                 model,
@@ -1776,10 +2000,10 @@ impl VulkanRenderer {
         
         unsafe fn update_skybox_uniform_buffer(&mut self, image_index: usize, game: &crate::game::Game) -> anyhow::Result<()> {
             let view = game.get_view_matrix();
-            
+
+            // CRITICAL: Use the EXACT SAME projection matrix as everything else!
             let aspect = self.swapchain_extent.width as f32 / self.swapchain_extent.height as f32;
-            let mut proj = Mat4::perspective_rh(45.0_f32.to_radians(), aspect, 0.1, 100.0);
-            proj.y_axis.y *= -1.0;
+            let proj = game.camera.projection_matrix(aspect);
             
             let ubo = SkyboxRenderer::create_ubo(view, proj, game.get_camera_position(), &game.skybox_config);
             
@@ -1805,11 +2029,10 @@ impl VulkanRenderer {
             
             let view = game.get_view_matrix();
             let view_pos = game.get_camera_position();
-            
-            // Create projection matrix (same as cube)
+
+            // CRITICAL: Use the EXACT SAME projection matrix as everything else!
             let aspect = self.swapchain_extent.width as f32 / self.swapchain_extent.height as f32;
-            let mut proj = Mat4::perspective_rh(45.0_f32.to_radians(), aspect, 0.1, 100.0);
-            proj.y_axis.y *= -1.0;
+            let proj = game.camera.projection_matrix(aspect);
             
             let ubo = NebulaRenderer::create_ubo(time, resolution, mouse, view, proj, view_pos, &game.nebula_config);
             
@@ -1824,7 +2047,41 @@ impl VulkanRenderer {
             
             Ok(())
         }
-        
+
+        unsafe fn update_gizmo_uniform_buffer(&mut self, image_index: usize, game: &crate::game::Game) -> anyhow::Result<()> {
+            let view = game.get_view_matrix();
+
+            // CRITICAL: Use the EXACT SAME projection matrix as picking!
+            // This ensures rendered gizmo position matches raycast picking position
+            let aspect = self.swapchain_extent.width as f32 / self.swapchain_extent.height as f32;
+            let proj = game.camera.projection_matrix(aspect);
+
+            // Gizmo is always rendered in world-space orientation (no rotation/scale from object)
+            // Only translate to the object's position
+            let model = if let Some(obj) = game.scene.selected_object() {
+                Mat4::from_translation(obj.transform.position)
+            } else {
+                Mat4::IDENTITY
+            };
+
+            let ubo = GizmoUniformBufferObject {
+                model,
+                view,
+                proj,
+            };
+
+            let data = self.device.map_memory(
+                self.gizmo_uniform_buffers_memory[image_index],
+                0,
+                std::mem::size_of::<GizmoUniformBufferObject>() as vk::DeviceSize,
+                vk::MemoryMapFlags::empty(),
+            )?;
+            std::ptr::copy_nonoverlapping(&ubo, data as *mut GizmoUniformBufferObject, 1);
+            self.device.unmap_memory(self.gizmo_uniform_buffers_memory[image_index]);
+
+            Ok(())
+        }
+
         pub fn render(&mut self, game: &mut crate::game::Game) -> anyhow::Result<()> {
             // Frame rate limiting to 120 FPS
             let target_frame_time = std::time::Duration::from_secs_f64(1.0 / 120.0);
@@ -1872,6 +2129,7 @@ impl VulkanRenderer {
                 self.update_uniform_buffer(self.current_frame, game)?;
                 self.update_skybox_uniform_buffer(self.current_frame, game)?;
                 self.update_nebula_uniform_buffer(self.current_frame, game)?;
+                self.update_gizmo_uniform_buffer(self.current_frame, game)?;
                 
                 // Prepare ImGui frame
                 self.imgui_platform.prepare_frame(self.imgui_context.io_mut(), &self.window)?;
@@ -2093,6 +2351,47 @@ impl VulkanRenderer {
                 &[depth_barrier_back],
             );
 
+            // 4. Render gizmo (if enabled and object selected)
+            if game.gizmo_state.enabled && game.scene.selected_object().is_some() {
+                self.device.cmd_bind_pipeline(
+                    command_buffer,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    self.gizmo_pipeline,
+                );
+
+                let gizmo_vertex_buffers = [self.gizmo_vertex_buffer];
+                let gizmo_offsets = [0];
+                self.device.cmd_bind_vertex_buffers(command_buffer, 0, &gizmo_vertex_buffers, &gizmo_offsets);
+                self.device.cmd_bind_index_buffer(command_buffer, self.gizmo_index_buffer, 0, vk::IndexType::UINT32);
+
+                self.device.cmd_bind_descriptor_sets(
+                    command_buffer,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    self.gizmo_pipeline_layout,
+                    0,
+                    &[self.gizmo_descriptor_sets[self.current_frame]],
+                    &[],
+                );
+
+                // Push hovered axis constant (0=none, 1=X, 2=Y, 3=Z)
+                let hovered_axis = match game.gizmo_state.hovered_axis {
+                    crate::gizmo::GizmoAxis::None => 0i32,
+                    crate::gizmo::GizmoAxis::X => 1i32,
+                    crate::gizmo::GizmoAxis::Y => 2i32,
+                    crate::gizmo::GizmoAxis::Z => 3i32,
+                };
+                let push_constants = hovered_axis.to_le_bytes();
+                self.device.cmd_push_constants(
+                    command_buffer,
+                    self.gizmo_pipeline_layout,
+                    vk::ShaderStageFlags::VERTEX,
+                    0,
+                    &push_constants,
+                );
+
+                self.device.cmd_draw_indexed(command_buffer, self.gizmo_mesh.indices.len() as u32, 1, 0, 0, 0);
+            }
+
             // Render ImGui
             let draw_data = self.imgui_context.render();
             self.imgui_renderer.render(
@@ -2134,7 +2433,13 @@ impl VulkanRenderer {
         pub fn window(&self) -> &Window {
             &self.window
         }
-        
+
+        /// Get the actual render viewport dimensions (swapchain extent)
+        /// This should be used for mouse picking to match rendering projection
+        pub fn viewport_size(&self) -> (f32, f32) {
+            (self.swapchain_extent.width as f32, self.swapchain_extent.height as f32)
+        }
+
         pub fn handle_imgui_event(&mut self, window: &Window, event: &winit::event::Event<()>) {
             self.imgui_platform.handle_event(self.imgui_context.io_mut(), window, event);
         }
@@ -2200,7 +2505,13 @@ impl VulkanRenderer {
             self.device.destroy_pipeline_layout(self.nebula.pipeline_layout, None);
             let (nebula_pipeline_layout, nebula_pipeline) =
             Self::create_nebula_pipeline(&self.device, swapchain_extent, self.render_pass, self.nebula.descriptor_set_layout)?;
-            
+
+            // Recreate gizmo pipeline with new extent
+            self.device.destroy_pipeline(self.gizmo_pipeline, None);
+            self.device.destroy_pipeline_layout(self.gizmo_pipeline_layout, None);
+            let (gizmo_pipeline_layout, gizmo_pipeline) =
+            Self::create_gizmo_pipeline(&self.device, swapchain_extent, self.render_pass, self.gizmo_descriptor_set_layout)?;
+
             self.swapchain = swapchain;
             self.swapchain_images = swapchain_images.clone();
             self.swapchain_format = swapchain_format;
@@ -2219,7 +2530,9 @@ impl VulkanRenderer {
             self.skybox.pipeline = skybox_pipeline;
             self.nebula.pipeline_layout = nebula_pipeline_layout;
             self.nebula.pipeline = nebula_pipeline;
-            
+            self.gizmo_pipeline_layout = gizmo_pipeline_layout;
+            self.gizmo_pipeline = gizmo_pipeline;
+
             // Recreate ImGui pipeline with new swapchain extent
             self.imgui_renderer.recreate_pipeline(&self.device, self.render_pass, swapchain_extent)?;
 
@@ -2302,6 +2615,19 @@ impl VulkanRenderer {
                 
                 // Cleanup nebula resources
                 self.nebula.cleanup(&self.device);
+
+                // Cleanup gizmo resources
+                for i in 0..MAX_FRAMES_IN_FLIGHT {
+                    self.device.destroy_buffer(self.gizmo_uniform_buffers[i], None);
+                    self.device.free_memory(self.gizmo_uniform_buffers_memory[i], None);
+                }
+                self.device.destroy_descriptor_set_layout(self.gizmo_descriptor_set_layout, None);
+                self.device.destroy_pipeline(self.gizmo_pipeline, None);
+                self.device.destroy_pipeline_layout(self.gizmo_pipeline_layout, None);
+                self.device.destroy_buffer(self.gizmo_index_buffer, None);
+                self.device.free_memory(self.gizmo_index_buffer_memory, None);
+                self.device.destroy_buffer(self.gizmo_vertex_buffer, None);
+                self.device.free_memory(self.gizmo_vertex_buffer_memory, None);
 
                 // Cleanup depth sampler
                 self.device.destroy_sampler(self.depth_sampler, None);

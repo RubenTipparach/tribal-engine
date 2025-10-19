@@ -112,18 +112,52 @@ impl Game {
 
     /// Handle mouse hover for object picking
     pub fn handle_mouse_hover(&mut self, mouse_x: f32, mouse_y: f32, viewport_width: f32, viewport_height: f32) {
-        self.object_picker.pick_object(
-            mouse_x,
-            mouse_y,
-            viewport_width,
-            viewport_height,
-            &self.scene,
-            &self.camera,
-        );
+        // Check gizmo hover first if enabled and object selected
+        if self.gizmo_state.enabled && self.scene.selected_object().is_some() {
+            let object_pos = self.scene.selected_object().unwrap().transform.position;
+            self.gizmo_state.pick_axis(
+                mouse_x,
+                mouse_y,
+                viewport_width,
+                viewport_height,
+                object_pos,
+                &self.camera,
+            );
+        } else {
+            // Otherwise check object hover
+            self.object_picker.pick_object(
+                mouse_x,
+                mouse_y,
+                viewport_width,
+                viewport_height,
+                &self.scene,
+                &self.camera,
+            );
+        }
     }
 
-    /// Handle mouse click for object selection
+    /// Handle mouse click for object selection or gizmo drag start
     pub fn handle_mouse_click(&mut self, mouse_x: f32, mouse_y: f32, viewport_width: f32, viewport_height: f32) {
+        // Check if clicking on gizmo first
+        if self.gizmo_state.enabled && self.scene.selected_object().is_some() {
+            let object_pos = self.scene.selected_object().unwrap().transform.position;
+            let axis = self.gizmo_state.pick_axis(
+                mouse_x,
+                mouse_y,
+                viewport_width,
+                viewport_height,
+                object_pos,
+                &self.camera,
+            );
+
+            if axis != crate::gizmo::GizmoAxis::None {
+                // Start dragging gizmo
+                self.gizmo_state.start_drag(axis);
+                return;
+            }
+        }
+
+        // Otherwise try to select an object
         if let Some(object_id) = self.object_picker.pick_object(
             mouse_x,
             mouse_y,
@@ -134,6 +168,30 @@ impl Game {
         ) {
             self.scene.select_object(object_id);
         }
+    }
+
+    /// Handle mouse drag for gizmo manipulation
+    pub fn handle_mouse_drag(&mut self, old_mouse: (f32, f32), new_mouse: (f32, f32), viewport_width: f32, viewport_height: f32) {
+        if !self.gizmo_state.using_gizmo {
+            return;
+        }
+
+        if let Some(obj) = self.scene.selected_object_mut() {
+            let new_pos = self.gizmo_state.apply_drag(
+                old_mouse,
+                new_mouse,
+                viewport_width,
+                viewport_height,
+                obj.transform.position,
+                &self.camera,
+            );
+            obj.transform.position = new_pos;
+        }
+    }
+
+    /// Handle mouse release
+    pub fn handle_mouse_release(&mut self) {
+        self.gizmo_state.end_drag();
     }
     
     /// Update game logic

@@ -81,16 +81,27 @@ impl Engine {
                     event: WindowEvent::CursorMoved { position, .. },
                     ..
                 } => {
+                    let old_mouse = game_state.mouse_position;
                     game_state.mouse_position = (position.x, position.y);
 
-                    // Update hover state if not using ImGui
-                    if !self.renderer.imgui_wants_mouse() && !game_state.game.gizmo_state.using_gizmo {
-                        let window_size = self.renderer.window().inner_size();
+                    // Handle gizmo drag if active
+                    if game_state.game.gizmo_state.using_gizmo && !self.renderer.imgui_wants_mouse() {
+                        let (viewport_width, viewport_height) = self.renderer.viewport_size();
+                        game_state.game.handle_mouse_drag(
+                            (old_mouse.0 as f32, old_mouse.1 as f32),
+                            (position.x as f32, position.y as f32),
+                            viewport_width,
+                            viewport_height,
+                        );
+                    }
+                    // Update hover state if not using ImGui or gizmo
+                    else if !self.renderer.imgui_wants_mouse() && !game_state.game.gizmo_state.using_gizmo {
+                        let (viewport_width, viewport_height) = self.renderer.viewport_size();
                         game_state.game.handle_mouse_hover(
                             position.x as f32,
                             position.y as f32,
-                            window_size.width as f32,
-                            window_size.height as f32,
+                            viewport_width,
+                            viewport_height,
                         );
                     }
                 }
@@ -98,16 +109,23 @@ impl Engine {
                     event: WindowEvent::MouseInput { state, button, .. },
                     ..
                 } => {
-                    // Handle left mouse for object selection
-                    if button == MouseButton::Left && state == ElementState::Pressed {
-                        if !self.renderer.imgui_wants_mouse() && !game_state.game.gizmo_state.using_gizmo {
-                            let window_size = self.renderer.window().inner_size();
-                            game_state.game.handle_mouse_click(
-                                game_state.mouse_position.0 as f32,
-                                game_state.mouse_position.1 as f32,
-                                window_size.width as f32,
-                                window_size.height as f32,
-                            );
+                    // Handle left mouse for object selection and gizmo interaction
+                    if button == MouseButton::Left {
+                        match state {
+                            ElementState::Pressed => {
+                                if !self.renderer.imgui_wants_mouse() {
+                                    let (viewport_width, viewport_height) = self.renderer.viewport_size();
+                                    game_state.game.handle_mouse_click(
+                                        game_state.mouse_position.0 as f32,
+                                        game_state.mouse_position.1 as f32,
+                                        viewport_width,
+                                        viewport_height,
+                                    );
+                                }
+                            }
+                            ElementState::Released => {
+                                game_state.game.handle_mouse_release();
+                            }
                         }
                     }
 

@@ -49,6 +49,92 @@ impl GizmoState {
         self.active_axis = GizmoAxis::None;
         self.using_gizmo = false;
     }
+
+    /// Check which gizmo arrow is being hovered/clicked
+    pub fn pick_axis(
+        &mut self,
+        mouse_x: f32,
+        mouse_y: f32,
+        viewport_width: f32,
+        viewport_height: f32,
+        object_pos: Vec3,
+        camera: &Camera,
+    ) -> GizmoAxis {
+        let view = camera.view_matrix();
+        let proj = camera.projection_matrix(viewport_width / viewport_height);
+        let ray = Ray::from_screen(mouse_x, mouse_y, viewport_width, viewport_height, view, proj);
+
+        let arrow_length = 1.0;
+        let pick_radius = 0.15; // Generous picking radius
+
+        let mut closest_axis = GizmoAxis::None;
+        let mut closest_dist = f32::MAX;
+
+        // Check X axis (Red)
+        let x_end = object_pos + Vec3::X * arrow_length;
+        if let Some(dist) = ray.intersects_cylinder(object_pos, x_end, pick_radius) {
+            if dist < closest_dist {
+                closest_dist = dist;
+                closest_axis = GizmoAxis::X;
+            }
+        }
+
+        // Check Y axis (Green)
+        let y_end = object_pos + Vec3::Y * arrow_length;
+        if let Some(dist) = ray.intersects_cylinder(object_pos, y_end, pick_radius) {
+            if dist < closest_dist {
+                closest_dist = dist;
+                closest_axis = GizmoAxis::Y;
+            }
+        }
+
+        // Check Z axis (Blue)
+        let z_end = object_pos + Vec3::Z * arrow_length;
+        if let Some(dist) = ray.intersects_cylinder(object_pos, z_end, pick_radius) {
+            if dist < closest_dist {
+                closest_axis = GizmoAxis::Z;
+            }
+        }
+
+        self.hovered_axis = closest_axis;
+        closest_axis
+    }
+
+    /// Apply drag motion to object position
+    pub fn apply_drag(
+        &self,
+        old_mouse: (f32, f32),
+        new_mouse: (f32, f32),
+        viewport_width: f32,
+        viewport_height: f32,
+        object_pos: Vec3,
+        camera: &Camera,
+    ) -> Vec3 {
+        if self.active_axis == GizmoAxis::None {
+            return object_pos;
+        }
+
+        let view = camera.view_matrix();
+        let proj = camera.projection_matrix(viewport_width / viewport_height);
+
+        // Get rays for old and new mouse positions
+        let old_ray = Ray::from_screen(old_mouse.0, old_mouse.1, viewport_width, viewport_height, view, proj);
+        let new_ray = Ray::from_screen(new_mouse.0, new_mouse.1, viewport_width, viewport_height, view, proj);
+
+        // Get axis direction in world space
+        let axis_dir = match self.active_axis {
+            GizmoAxis::X => Vec3::X,
+            GizmoAxis::Y => Vec3::Y,
+            GizmoAxis::Z => Vec3::Z,
+            GizmoAxis::None => return object_pos,
+        };
+
+        // Project ray movement onto axis
+        let old_point = old_ray.project_onto_axis(object_pos, axis_dir);
+        let new_point = new_ray.project_onto_axis(object_pos, axis_dir);
+
+        object_pos + (new_point - old_point)
+    }
 }
 
 impl Default for GizmoState {
@@ -94,44 +180,91 @@ impl GizmoMesh {
         start: Vec3,
         direction: Vec3,
         length: f32,
-        thickness: f32,
+        _thickness: f32,
         head_length: f32,
-        color: Vec3,
+        _color: Vec3,
     ) {
         let base_idx = vertices.len() as u32;
         let shaft_end = start + direction * (length - head_length);
         let arrow_end = start + direction * length;
 
-        // Arrow shaft (simple line for now, can be made into cylinder)
-        vertices.push(Vertex {
-            position: start,
-            normal: direction,
-            uv: Vec2::ZERO,
-        });
-        vertices.push(Vertex {
-            position: shaft_end,
-            normal: direction,
-            uv: Vec2::new(1.0, 0.0),
-        });
+        // Build arrow as a cylinder shaft + cone head using triangles
+        let segments = 8;
 
-        // Arrow shaft line
-        indices.push(base_idx);
-        indices.push(base_idx + 1);
+        // Get perpendicular vectors for the cylinder
+        let (perp1, perp2) = if direction.x.abs() < 0.9 {
+            let perp1 = direction.cross(Vec3::X).normalize() * 0.03;
+            let perp2 = direction.cross(perp1).normalize() * 0.03;
+            (perp1, perp2)
+        } else {
+            let perp1 = direction.cross(Vec3::Y).normalize() * 0.03;
+            let perp2 = direction.cross(perp1).normalize() * 0.03;
+            (perp1, perp2)
+        };
 
-        // Arrow head (cone tip)
-        vertices.push(Vertex {
-            position: shaft_end,
-            normal: direction,
-            uv: Vec2::ZERO,
-        });
+        // Create cylinder shaft
+        for i in 0..segments {
+            let angle = (i as f32 / segments as f32) * 2.0 * std::f32::consts::PI;
+            let next_angle = ((i + 1) as f32 / segments as f32) * 2.0 * std::f32::consts::PI;
+
+            let offset = perp1 * angle.cos() + perp2 * angle.sin();
+            let next_offset = perp1 * next_angle.cos() + perp2 * next_angle.sin();
+
+            // Bottom ring
+            vertices.push(Vertex {
+                position: start + offset,
+                normal: direction,
+                uv: Vec2::ZERO,
+            });
+
+            // Top ring
+            vertices.push(Vertex {
+                position: shaft_end + offset,
+                normal: direction,
+                uv: Vec2::ZERO,
+            });
+
+            // Triangle 1 of quad
+            indices.push(base_idx + (i * 2) as u32);
+            indices.push(base_idx + (i * 2 + 1) as u32);
+            indices.push(base_idx + ((i * 2 + 2) % (segments * 2)) as u32);
+
+            // Triangle 2 of quad
+            indices.push(base_idx + (i * 2 + 1) as u32);
+            indices.push(base_idx + ((i * 2 + 3) % (segments * 2)) as u32);
+            indices.push(base_idx + ((i * 2 + 2) % (segments * 2)) as u32);
+        }
+
+        let cone_base_idx = vertices.len() as u32;
+        let head_radius = 0.1;
+
+        // Create cone head
+        for i in 0..segments {
+            let angle = (i as f32 / segments as f32) * 2.0 * std::f32::consts::PI;
+            let offset = (perp1 * angle.cos() + perp2 * angle.sin()) * (head_radius / 0.03);
+
+            vertices.push(Vertex {
+                position: shaft_end + offset,
+                normal: direction,
+                uv: Vec2::ZERO,
+            });
+        }
+
+        // Cone tip
         vertices.push(Vertex {
             position: arrow_end,
             normal: direction,
-            uv: Vec2::new(1.0, 0.0),
+            uv: Vec2::ZERO,
         });
 
-        indices.push(base_idx + 2);
-        indices.push(base_idx + 3);
+        let tip_idx = vertices.len() as u32 - 1;
+
+        // Cone triangles
+        for i in 0..segments {
+            indices.push(cone_base_idx + i as u32);
+            indices.push(tip_idx);
+            indices.push(cone_base_idx + ((i + 1) % segments) as u32);
+        }
     }
 }
 
@@ -152,8 +285,9 @@ impl Ray {
         proj_matrix: Mat4,
     ) -> Self {
         // Normalize screen coordinates to NDC (-1 to 1)
+        // Note: For Vulkan with flipped Y projection, we need to NOT flip Y here
         let ndc_x = (2.0 * mouse_x) / viewport_width - 1.0;
-        let ndc_y = 1.0 - (2.0 * mouse_y) / viewport_height;
+        let ndc_y = (2.0 * mouse_y) / viewport_height - 1.0; // Changed: removed the flip
 
         // Create ray in clip space
         let ray_clip = Vec4::new(ndc_x, ndc_y, -1.0, 1.0);
@@ -213,6 +347,69 @@ impl Ray {
             }
         }
     }
+
+    /// Test intersection with a cylinder defined by start and end points
+    pub fn intersects_cylinder(&self, start: Vec3, end: Vec3, radius: f32) -> Option<f32> {
+        let axis = (end - start).normalize();
+        let length = (end - start).length();
+
+        // Vector from start to ray origin
+        let oc = self.origin - start;
+
+        // Project onto cylinder axis
+        let axis_dot_dir = axis.dot(self.direction);
+        let axis_dot_oc = axis.dot(oc);
+
+        // Solve quadratic equation for cylinder intersection
+        let a = 1.0 - axis_dot_dir * axis_dot_dir;
+        let b = 2.0 * (oc.dot(self.direction) - axis_dot_oc * axis_dot_dir);
+        let c = oc.dot(oc) - axis_dot_oc * axis_dot_oc - radius * radius;
+
+        let discriminant = b * b - 4.0 * a * c;
+        if discriminant < 0.0 {
+            return None;
+        }
+
+        let t = (-b - discriminant.sqrt()) / (2.0 * a);
+        if t < 0.0 {
+            return None;
+        }
+
+        // Check if intersection is within cylinder length
+        let point = self.origin + self.direction * t;
+        let projection = (point - start).dot(axis);
+
+        if projection >= 0.0 && projection <= length {
+            Some(t)
+        } else {
+            None
+        }
+    }
+
+    /// Project the ray onto an axis and find the closest point
+    pub fn project_onto_axis(&self, point_on_axis: Vec3, axis_dir: Vec3) -> Vec3 {
+        // Find the closest point on the ray to the axis
+        let w = self.origin - point_on_axis;
+        let a = self.direction.dot(self.direction);
+        let b = self.direction.dot(axis_dir);
+        let c = axis_dir.dot(axis_dir);
+        let d = self.direction.dot(w);
+        let e = axis_dir.dot(w);
+
+        let denom = a * c - b * b;
+        let t = if denom.abs() < 1e-6 {
+            0.0
+        } else {
+            (b * e - c * d) / denom
+        };
+
+        // Point on ray
+        let point_on_ray = self.origin + self.direction * t;
+
+        // Project onto axis
+        let projection = (point_on_ray - point_on_axis).dot(axis_dir);
+        point_on_axis + axis_dir * projection
+    }
 }
 
 /// Object picker for selecting objects in 3D space
@@ -244,9 +441,9 @@ impl ObjectPicker {
 
         let mut closest_object: Option<(ObjectId, f32)> = None;
 
-        // Check all objects (skip nebula - it's not directly selectable)
+        // Check all objects (skip nebula and skybox - they're not selectable)
         for obj in scene.objects().values() {
-            if !obj.visible || obj.object_type == ObjectType::Nebula {
+            if !obj.visible || obj.object_type == ObjectType::Nebula || obj.object_type == ObjectType::Skybox {
                 continue;
             }
 
