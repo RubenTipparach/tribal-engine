@@ -121,7 +121,7 @@ jobs:
       with:
         vulkan-query-version: latest
         vulkan-components: Glslang
-        vulkan-use-cache: true
+        vulkan-use-cache: false
 
     - name: Compile shaders
       shell: bash
