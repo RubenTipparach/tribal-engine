@@ -8,3 +8,6 @@ Cargo.lock
 .history/
 .claude/
 nul
+temp_struct_test.exe
+temp_struct_test.pdb
+temp_struct_test.rs

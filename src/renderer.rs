@@ -2,7 +2,7 @@ use ash::{vk, Entry};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use std::ffi::{CStr, CString};
 use winit::window::Window;
-use glam::{Mat4, Vec3};
+use glam::{Mat4, Vec2, Vec3};
 use imgui::Context;
 
 use crate::mesh::{Mesh, Vertex};
@@ -39,12 +39,16 @@ pub struct VulkanRenderer {
     skybox: SkyboxRenderer,
     // Nebula
     nebula: NebulaRenderer,
-    // Gizmo
-    gizmo_mesh: Mesh,
+    // Gizmo - store all three mesh types
+    gizmo_translate_mesh: Mesh,
+    gizmo_rotate_mesh: Mesh,
+    gizmo_scale_mesh: Mesh,
     gizmo_vertex_buffer: vk::Buffer,
     gizmo_vertex_buffer_memory: vk::DeviceMemory,
+    gizmo_vertex_buffer_size: vk::DeviceSize,
     gizmo_index_buffer: vk::Buffer,
     gizmo_index_buffer_memory: vk::DeviceMemory,
+    gizmo_index_buffer_size: vk::DeviceSize,
     gizmo_descriptor_set_layout: vk::DescriptorSetLayout,
     gizmo_pipeline_layout: vk::PipelineLayout,
     gizmo_pipeline: vk::Pipeline,
@@ -64,6 +68,13 @@ pub struct VulkanRenderer {
     last_time: std::time::Instant,
     last_frame_time: std::time::Instant,
     window: Window,
+    // Mesh registry for cube objects
+    cube_mesh: Mesh,
+    cube_vertex_buffer: vk::Buffer,
+    cube_vertex_buffer_memory: vk::DeviceMemory,
+    cube_index_buffer: vk::Buffer,
+    cube_index_buffer_memory: vk::DeviceMemory,
+    // Legacy fields for compatibility
     mesh: Mesh,
     vertex_buffer: vk::Buffer,
     vertex_buffer_memory: vk::DeviceMemory,
@@ -88,7 +99,6 @@ pub struct VulkanRenderer {
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct UniformBufferObject {
-    model: Mat4,
     view: Mat4,
     proj: Mat4,
     view_pos: Vec3,
@@ -233,28 +243,35 @@ impl VulkanRenderer {
             // Create command pool
             let command_pool = Self::create_command_pool(&instance, physical_device, &device, &surface_loader, surface)?;
             
-            // Create cube mesh
-            let mesh = Mesh::create_cube();
-            
-            // Create vertex buffer
-            let (vertex_buffer, vertex_buffer_memory) = Self::create_vertex_buffer(
+            // Create cube mesh (will be used for all cube objects)
+            let cube_mesh = Mesh::create_cube();
+
+            // Create cube vertex buffer
+            let (cube_vertex_buffer, cube_vertex_buffer_memory) = Self::create_vertex_buffer(
                 &instance,
                 physical_device,
                 &device,
                 command_pool,
                 graphics_queue,
-                &mesh.vertices,
+                &cube_mesh.vertices,
             )?;
-            
-            // Create index buffer
-            let (index_buffer, index_buffer_memory) = Self::create_index_buffer(
+
+            // Create cube index buffer
+            let (cube_index_buffer, cube_index_buffer_memory) = Self::create_index_buffer(
                 &instance,
                 physical_device,
                 &device,
                 command_pool,
                 graphics_queue,
-                &mesh.indices,
+                &cube_mesh.indices,
             )?;
+
+            // Legacy: keep old mesh references for compatibility
+            let mesh = cube_mesh.clone();
+            let vertex_buffer = cube_vertex_buffer;
+            let vertex_buffer_memory = cube_vertex_buffer_memory;
+            let index_buffer = cube_index_buffer;
+            let index_buffer_memory = cube_index_buffer_memory;
             
             // Create uniform buffers
             let (uniform_buffers, uniform_buffers_memory) = Self::create_uniform_buffers(
@@ -308,7 +325,7 @@ impl VulkanRenderer {
                 )?;
                 
                 let skybox_descriptor_pool = Self::create_descriptor_pool(&device, MAX_FRAMES_IN_FLIGHT)?;
-                let skybox_descriptor_sets = Self::create_descriptor_sets(
+                let skybox_descriptor_sets = Self::create_skybox_descriptor_sets(
                     &device,
                     skybox_descriptor_pool,
                     skybox_descriptor_set_layout,
@@ -367,30 +384,91 @@ impl VulkanRenderer {
                 }
             };
 
-            // Create gizmo
-            let (gizmo_vertices, gizmo_indices) = GizmoMesh::generate_translate_arrows();
-            let gizmo_mesh = Mesh {
-                vertices: gizmo_vertices,
-                indices: gizmo_indices,
+            // Create all three gizmo meshes
+            let (translate_vertices, translate_indices) = GizmoMesh::generate_translate_arrows();
+            let gizmo_translate_mesh = Mesh {
+                vertices: translate_vertices,
+                indices: translate_indices,
             };
 
-            let (gizmo_vertex_buffer, gizmo_vertex_buffer_memory) = Self::create_vertex_buffer(
+            let (rotate_vertices, rotate_indices) = GizmoMesh::generate_rotate_circles();
+            let gizmo_rotate_mesh = Mesh {
+                vertices: rotate_vertices,
+                indices: rotate_indices,
+            };
+
+            let (scale_vertices, scale_indices) = GizmoMesh::generate_scale_boxes();
+            let gizmo_scale_mesh = Mesh {
+                vertices: scale_vertices,
+                indices: scale_indices,
+            };
+
+            // Use translate mesh for initial buffer creation (largest mesh will be used)
+            let max_vertices = gizmo_translate_mesh.vertices.len()
+                .max(gizmo_rotate_mesh.vertices.len())
+                .max(gizmo_scale_mesh.vertices.len());
+            let max_indices = gizmo_translate_mesh.indices.len()
+                .max(gizmo_rotate_mesh.indices.len())
+                .max(gizmo_scale_mesh.indices.len());
+
+            // Create buffers large enough for the largest mesh
+            let zero_vertex = Vertex {
+                position: Vec3::ZERO,
+                normal: Vec3::Y,
+                uv: Vec2::ZERO,
+            };
+            let mut temp_vertices = gizmo_translate_mesh.vertices.clone();
+            temp_vertices.resize(max_vertices, zero_vertex);
+            let mut temp_indices = gizmo_translate_mesh.indices.clone();
+            temp_indices.resize(max_indices, 0);
+
+            // Create HOST_VISIBLE buffers for gizmos since we update them dynamically
+            let gizmo_vertex_buffer_size = (std::mem::size_of::<Vertex>() * max_vertices) as vk::DeviceSize;
+            let (gizmo_vertex_buffer, gizmo_vertex_buffer_memory) = Self::create_buffer(
                 &instance,
                 physical_device,
                 &device,
-                command_pool,
-                graphics_queue,
-                &gizmo_mesh.vertices,
+                gizmo_vertex_buffer_size,
+                vk::BufferUsageFlags::VERTEX_BUFFER,
+                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
             )?;
 
-            let (gizmo_index_buffer, gizmo_index_buffer_memory) = Self::create_index_buffer(
+            let gizmo_index_buffer_size = (std::mem::size_of::<u32>() * max_indices) as vk::DeviceSize;
+            let (gizmo_index_buffer, gizmo_index_buffer_memory) = Self::create_buffer(
                 &instance,
                 physical_device,
                 &device,
-                command_pool,
-                graphics_queue,
-                &gizmo_mesh.indices,
+                gizmo_index_buffer_size,
+                vk::BufferUsageFlags::INDEX_BUFFER,
+                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
             )?;
+
+            // Initialize with translate mesh data
+            let vertex_data = device.map_memory(
+                gizmo_vertex_buffer_memory,
+                0,
+                gizmo_vertex_buffer_size,
+                vk::MemoryMapFlags::empty(),
+            )?;
+            std::ptr::copy_nonoverlapping(
+                temp_vertices.as_ptr(),
+                vertex_data as *mut Vertex,
+                temp_vertices.len(),
+            );
+            device.unmap_memory(gizmo_vertex_buffer_memory);
+
+            let index_data = device.map_memory(
+                gizmo_index_buffer_memory,
+                0,
+                gizmo_index_buffer_size,
+                vk::MemoryMapFlags::empty(),
+            )?;
+            std::ptr::copy_nonoverlapping(
+                temp_indices.as_ptr(),
+                index_data as *mut u32,
+                temp_indices.len(),
+            );
+            device.unmap_memory(gizmo_index_buffer_memory);
 
             let gizmo_descriptor_set_layout = Self::create_descriptor_set_layout(&device)?;
             let (gizmo_pipeline_layout, gizmo_pipeline) =
@@ -494,11 +572,15 @@ impl VulkanRenderer {
                 graphics_pipeline,
                 skybox,
                 nebula,
-                gizmo_mesh,
+                gizmo_translate_mesh,
+                gizmo_rotate_mesh,
+                gizmo_scale_mesh,
                 gizmo_vertex_buffer,
                 gizmo_vertex_buffer_memory,
+                gizmo_vertex_buffer_size,
                 gizmo_index_buffer,
                 gizmo_index_buffer_memory,
+                gizmo_index_buffer_size,
                 gizmo_descriptor_set_layout,
                 gizmo_pipeline_layout,
                 gizmo_pipeline,
@@ -518,6 +600,11 @@ impl VulkanRenderer {
                 last_time: std::time::Instant::now(),
                 last_frame_time: std::time::Instant::now(),
                 window,
+                cube_mesh,
+                cube_vertex_buffer,
+                cube_vertex_buffer_memory,
+                cube_index_buffer,
+                cube_index_buffer_memory,
                 mesh,
                 vertex_buffer,
                 vertex_buffer_memory,
@@ -983,19 +1070,27 @@ impl VulkanRenderer {
             .depth_compare_op(vk::CompareOp::LESS)
             .depth_bounds_test_enable(false)
             .stencil_test_enable(false);
-            
+
             let color_blend_attachment = vk::PipelineColorBlendAttachmentState::default()
             .color_write_mask(vk::ColorComponentFlags::RGBA)
             .blend_enable(false);
-            
+
             let color_blending = vk::PipelineColorBlendStateCreateInfo::default()
             .logic_op_enable(false)
             .attachments(std::slice::from_ref(&color_blend_attachment));
-            
+
             let set_layouts = [descriptor_set_layout];
+
+            // Define push constant range for model matrix
+            let push_constant_range = vk::PushConstantRange::default()
+                .stage_flags(vk::ShaderStageFlags::VERTEX)
+                .offset(0)
+                .size(std::mem::size_of::<glam::Mat4>() as u32);
+
             let pipeline_layout_info = vk::PipelineLayoutCreateInfo::default()
-            .set_layouts(&set_layouts);
-            
+                .set_layouts(&set_layouts)
+                .push_constant_ranges(std::slice::from_ref(&push_constant_range));
+
             let pipeline_layout = device.create_pipeline_layout(&pipeline_layout_info, None)?;
             
             let pipeline_info = vk::GraphicsPipelineCreateInfo::default()
@@ -1039,8 +1134,8 @@ impl VulkanRenderer {
             descriptor_set_layout: vk::DescriptorSetLayout,
         ) -> anyhow::Result<(vk::PipelineLayout, vk::Pipeline)> {
             let vert_shader_code = include_bytes!("../shaders/skybox.vert.spv");
-            let frag_shader_code = include_bytes!("../shaders/skybox.frag.spv");
-            
+            let frag_shader_code = include_bytes!("../shaders/skybox_starry.frag.spv");
+
             let vert_shader_module = Self::create_shader_module(device, vert_shader_code)?;
             let frag_shader_module = Self::create_shader_module(device, frag_shader_code)?;
             
@@ -1215,10 +1310,11 @@ impl VulkanRenderer {
             .sample_shading_enable(false)
             .rasterization_samples(vk::SampleCountFlags::TYPE_1);
 
-            // Depth test enabled, write enabled, always show on top
+            // Enable depth test so rotation rings sort correctly, but use ALWAYS to render on top of scene
             let depth_stencil = vk::PipelineDepthStencilStateCreateInfo::default()
-            .depth_test_enable(false) // Disable depth test so gizmo always renders on top
-            .depth_write_enable(false);
+            .depth_test_enable(true)
+            .depth_write_enable(true)
+            .depth_compare_op(vk::CompareOp::ALWAYS); // Always pass depth test (render on top), but still write depth
 
             let color_blend_attachment = vk::PipelineColorBlendAttachmentState::default()
             .color_write_mask(vk::ColorComponentFlags::RGBA)
@@ -1353,11 +1449,12 @@ impl VulkanRenderer {
             .sample_shading_enable(false)
             .rasterization_samples(vk::SampleCountFlags::TYPE_1);
             
-            // Depth test enabled to read depth buffer, write disabled so nebula acts like fog
+            // Depth test disabled - nebula is a fullscreen effect that blends over everything
+            // The fragment shader reads the depth buffer to modulate opacity based on distance
             let depth_stencil = vk::PipelineDepthStencilStateCreateInfo::default()
-            .depth_test_enable(true)
+            .depth_test_enable(false)
             .depth_write_enable(false)
-            .depth_compare_op(vk::CompareOp::LESS_OR_EQUAL);
+            .depth_compare_op(vk::CompareOp::ALWAYS);
             
             // Alpha blending for nebula transparency
             let color_blend_attachment = vk::PipelineColorBlendAttachmentState::default()
@@ -1804,6 +1901,39 @@ impl VulkanRenderer {
             Ok(descriptor_sets)
         }
 
+        unsafe fn create_skybox_descriptor_sets(
+            device: &ash::Device,
+            pool: vk::DescriptorPool,
+            layout: vk::DescriptorSetLayout,
+            buffers: &[vk::Buffer],
+            count: usize,
+        ) -> anyhow::Result<Vec<vk::DescriptorSet>> {
+            let layouts = vec![layout; count];
+            let alloc_info = vk::DescriptorSetAllocateInfo::default()
+            .descriptor_pool(pool)
+            .set_layouts(&layouts);
+
+            let descriptor_sets = device.allocate_descriptor_sets(&alloc_info)?;
+
+            for (i, &descriptor_set) in descriptor_sets.iter().enumerate() {
+                let buffer_info = vk::DescriptorBufferInfo::default()
+                .buffer(buffers[i])
+                .offset(0)
+                .range(std::mem::size_of::<SkyboxUniformBufferObject>() as vk::DeviceSize);
+
+                let descriptor_write = vk::WriteDescriptorSet::default()
+                .dst_set(descriptor_set)
+                .dst_binding(0)
+                .dst_array_element(0)
+                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                .buffer_info(std::slice::from_ref(&buffer_info));
+
+                device.update_descriptor_sets(std::slice::from_ref(&descriptor_write), &[]);
+            }
+
+            Ok(descriptor_sets)
+        }
+
         unsafe fn create_nebula_descriptor_sets(
             device: &ash::Device,
             pool: vk::DescriptorPool,
@@ -1965,7 +2095,6 @@ impl VulkanRenderer {
         }
 
         unsafe fn update_uniform_buffer(&mut self, image_index: usize, game: &crate::game::Game) -> anyhow::Result<()> {
-            let model = game.get_cube_model_matrix();
             let view = game.get_view_matrix();
 
             // CRITICAL: Use the EXACT SAME projection matrix as gizmo and picking!
@@ -1973,7 +2102,6 @@ impl VulkanRenderer {
             let proj = game.camera.projection_matrix(aspect);
             
             let ubo = UniformBufferObject {
-                model,
                 view,
                 proj,
                 view_pos: game.get_camera_position(),
@@ -2056,10 +2184,20 @@ impl VulkanRenderer {
             let aspect = self.swapchain_extent.width as f32 / self.swapchain_extent.height as f32;
             let proj = game.camera.projection_matrix(aspect);
 
-            // Gizmo is always rendered in world-space orientation (no rotation/scale from object)
-            // Only translate to the object's position
+            // Gizmo transform based on mode:
+            // - Translate: world-space orientation (easier to use)
+            // - Rotate/Scale: object-space orientation (rotate with object)
             let model = if let Some(obj) = game.scene.selected_object() {
-                Mat4::from_translation(obj.transform.position)
+                match game.gizmo_state.mode {
+                    crate::gizmo::GizmoMode::Translate => {
+                        // World-space: only position
+                        Mat4::from_translation(obj.transform.position)
+                    }
+                    crate::gizmo::GizmoMode::Rotate | crate::gizmo::GizmoMode::Scale => {
+                        // Object-space: position + rotation (no scale, gizmo stays same size)
+                        Mat4::from_rotation_translation(obj.transform.rotation, obj.transform.position)
+                    }
+                }
             } else {
                 Mat4::IDENTITY
             };
@@ -2078,6 +2216,39 @@ impl VulkanRenderer {
             )?;
             std::ptr::copy_nonoverlapping(&ubo, data as *mut GizmoUniformBufferObject, 1);
             self.device.unmap_memory(self.gizmo_uniform_buffers_memory[image_index]);
+
+            Ok(())
+        }
+
+        /// Update gizmo vertex and index buffers with the current mesh data
+        unsafe fn update_gizmo_buffers(&mut self, mesh: &Mesh) -> anyhow::Result<()> {
+            // Update vertex buffer - map the full buffer size, not just the mesh size
+            let vertex_data = self.device.map_memory(
+                self.gizmo_vertex_buffer_memory,
+                0,
+                self.gizmo_vertex_buffer_size,
+                vk::MemoryMapFlags::empty(),
+            )?;
+            std::ptr::copy_nonoverlapping(
+                mesh.vertices.as_ptr(),
+                vertex_data as *mut Vertex,
+                mesh.vertices.len(),
+            );
+            self.device.unmap_memory(self.gizmo_vertex_buffer_memory);
+
+            // Update index buffer - map the full buffer size, not just the mesh size
+            let index_data = self.device.map_memory(
+                self.gizmo_index_buffer_memory,
+                0,
+                self.gizmo_index_buffer_size,
+                vk::MemoryMapFlags::empty(),
+            )?;
+            std::ptr::copy_nonoverlapping(
+                mesh.indices.as_ptr(),
+                index_data as *mut u32,
+                mesh.indices.len(),
+            );
+            self.device.unmap_memory(self.gizmo_index_buffer_memory);
 
             Ok(())
         }
@@ -2231,41 +2402,45 @@ impl VulkanRenderer {
             );
             
             // 1. Render skybox (furthest back)
-            self.device.cmd_bind_pipeline(
-                command_buffer,
-                vk::PipelineBindPoint::GRAPHICS,
-                self.skybox.pipeline,
-            );
+            if game.is_skybox_visible() {
+                self.device.cmd_bind_pipeline(
+                    command_buffer,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    self.skybox.pipeline,
+                );
+
+                let skybox_vertex_buffers = [self.skybox.vertex_buffer];
+                let skybox_offsets = [0];
+                self.device.cmd_bind_vertex_buffers(command_buffer, 0, &skybox_vertex_buffers, &skybox_offsets);
+                self.device.cmd_bind_index_buffer(command_buffer, self.skybox.index_buffer, 0, vk::IndexType::UINT32);
+
+                self.device.cmd_bind_descriptor_sets(
+                    command_buffer,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    self.skybox.pipeline_layout,
+                    0,
+                    &[self.skybox.descriptor_sets[self.current_frame]],
+                    &[],
+                );
+
+                self.device.cmd_draw_indexed(command_buffer, self.skybox.mesh.indices.len() as u32, 1, 0, 0, 0);
+            }
             
-            let skybox_vertex_buffers = [self.skybox.vertex_buffer];
-            let skybox_offsets = [0];
-            self.device.cmd_bind_vertex_buffers(command_buffer, 0, &skybox_vertex_buffers, &skybox_offsets);
-            self.device.cmd_bind_index_buffer(command_buffer, self.skybox.index_buffer, 0, vk::IndexType::UINT32);
-            
-            self.device.cmd_bind_descriptor_sets(
-                command_buffer,
-                vk::PipelineBindPoint::GRAPHICS,
-                self.skybox.pipeline_layout,
-                0,
-                &[self.skybox.descriptor_sets[self.current_frame]],
-                &[],
-            );
-            
-            self.device.cmd_draw_indexed(command_buffer, self.skybox.mesh.indices.len() as u32, 1, 0, 0, 0);
-            
-            // 2. Render solid objects first to populate depth buffer
-            if game.is_cube_visible() {
+            // 2. Render solid objects (all cubes) first to populate depth buffer
+            let visible_cubes = game.get_visible_cubes();
+            if !visible_cubes.is_empty() {
                 self.device.cmd_bind_pipeline(
                     command_buffer,
                     vk::PipelineBindPoint::GRAPHICS,
                     self.graphics_pipeline,
                 );
-                
-                let vertex_buffers = [self.vertex_buffer];
+
+                // Bind cube mesh buffers once for all cubes
+                let vertex_buffers = [self.cube_vertex_buffer];
                 let offsets = [0];
                 self.device.cmd_bind_vertex_buffers(command_buffer, 0, &vertex_buffers, &offsets);
-                self.device.cmd_bind_index_buffer(command_buffer, self.index_buffer, 0, vk::IndexType::UINT32);
-                
+                self.device.cmd_bind_index_buffer(command_buffer, self.cube_index_buffer, 0, vk::IndexType::UINT32);
+
                 self.device.cmd_bind_descriptor_sets(
                     command_buffer,
                     vk::PipelineBindPoint::GRAPHICS,
@@ -2274,8 +2449,25 @@ impl VulkanRenderer {
                     &[self.descriptor_sets[self.current_frame]],
                     &[],
                 );
-                
-                self.device.cmd_draw_indexed(command_buffer, self.mesh.indices.len() as u32, 1, 0, 0, 0);
+
+                let indices_per_cube = self.cube_mesh.indices.len() as u32;
+
+                // Render each cube with its own model matrix via push constants
+                for model_matrix in visible_cubes.iter() {
+                    // Update push constants with this cube's model matrix
+                    let model_array = [*model_matrix];
+                    let push_constants = bytemuck::cast_slice(&model_array);
+                    self.device.cmd_push_constants(
+                        command_buffer,
+                        self.pipeline_layout,
+                        vk::ShaderStageFlags::VERTEX,
+                        0,
+                        push_constants,
+                    );
+
+                    // Draw this cube instance
+                    self.device.cmd_draw_indexed(command_buffer, indices_per_cube, 1, 0, 0, 0);
+                }
             }
 
             // Transition depth image for shader reading
@@ -2306,23 +2498,25 @@ impl VulkanRenderer {
             );
 
             // 3. Render nebula volumetric fog (reads depth buffer to interact with objects)
-            self.device.cmd_bind_pipeline(
-                command_buffer,
-                vk::PipelineBindPoint::GRAPHICS,
-                self.nebula.pipeline,
-            );
-            
-            self.device.cmd_bind_descriptor_sets(
-                command_buffer,
-                vk::PipelineBindPoint::GRAPHICS,
-                self.nebula.pipeline_layout,
-                0,
-                &[self.nebula.descriptor_sets[self.current_frame]],
-                &[],
-            );
-            
-            // Draw fullscreen triangle (3 vertices, 1 instance, no vertex buffer)
-            self.device.cmd_draw(command_buffer, 3, 1, 0, 0);
+            if game.is_nebula_visible() {
+                self.device.cmd_bind_pipeline(
+                    command_buffer,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    self.nebula.pipeline,
+                );
+
+                self.device.cmd_bind_descriptor_sets(
+                    command_buffer,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    self.nebula.pipeline_layout,
+                    0,
+                    &[self.nebula.descriptor_sets[self.current_frame]],
+                    &[],
+                );
+
+                // Draw fullscreen triangle (3 vertices, 1 instance, no vertex buffer)
+                self.device.cmd_draw(command_buffer, 3, 1, 0, 0);
+            }
 
             // Transition depth image back to depth attachment for next frame
             let depth_barrier_back = vk::ImageMemoryBarrier::default()
@@ -2353,6 +2547,34 @@ impl VulkanRenderer {
 
             // 4. Render gizmo (if enabled and object selected)
             if game.gizmo_state.enabled && game.scene.selected_object().is_some() {
+                // Select the appropriate mesh based on current mode and get index count
+                let (index_count, mesh_vertices, mesh_indices) = match game.gizmo_state.mode {
+                    crate::gizmo::GizmoMode::Translate => (
+                        self.gizmo_translate_mesh.indices.len() as u32,
+                        self.gizmo_translate_mesh.vertices.clone(),
+                        self.gizmo_translate_mesh.indices.clone(),
+                    ),
+                    crate::gizmo::GizmoMode::Rotate => (
+                        self.gizmo_rotate_mesh.indices.len() as u32,
+                        self.gizmo_rotate_mesh.vertices.clone(),
+                        self.gizmo_rotate_mesh.indices.clone(),
+                    ),
+                    crate::gizmo::GizmoMode::Scale => (
+                        self.gizmo_scale_mesh.indices.len() as u32,
+                        self.gizmo_scale_mesh.vertices.clone(),
+                        self.gizmo_scale_mesh.indices.clone(),
+                    ),
+                };
+
+                // Create a temporary mesh to pass to update function
+                let temp_mesh = Mesh {
+                    vertices: mesh_vertices,
+                    indices: mesh_indices,
+                };
+
+                // Update buffers with current mesh data
+                self.update_gizmo_buffers(&temp_mesh)?;
+
                 self.device.cmd_bind_pipeline(
                     command_buffer,
                     vk::PipelineBindPoint::GRAPHICS,
@@ -2389,7 +2611,7 @@ impl VulkanRenderer {
                     &push_constants,
                 );
 
-                self.device.cmd_draw_indexed(command_buffer, self.gizmo_mesh.indices.len() as u32, 1, 0, 0, 0);
+                self.device.cmd_draw_indexed(command_buffer, index_count, 1, 0, 0, 0);
             }
 
             // Render ImGui
@@ -2447,7 +2669,11 @@ impl VulkanRenderer {
         pub fn imgui_wants_mouse(&self) -> bool {
             self.imgui_context.io().want_capture_mouse
         }
-        
+
+        pub fn imgui_wants_keyboard(&self) -> bool {
+            self.imgui_context.io().want_capture_keyboard
+        }
+
         pub fn build_ui(&mut self, game: &mut crate::game::Game) {
             let viewport_width = self.swapchain_extent.width as f32;
             let viewport_height = self.swapchain_extent.height as f32;

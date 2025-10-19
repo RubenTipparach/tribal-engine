@@ -22,7 +22,11 @@ struct GameState {
     mouse_position: (f64, f64),
     right_mouse_pressed: bool,
     left_mouse_pressed: bool,
+    middle_mouse_pressed: bool,
     camera_speed: f32,
+    frame_count: u32,
+    fps_timer: std::time::Instant,
+    current_fps: f32,
 }
 
 impl Engine {
@@ -48,15 +52,20 @@ impl Engine {
         UiManager::load_all_configs(&mut game);
         UiManager::load_scene_on_startup(&mut game);
 
+        let now = std::time::Instant::now();
         let mut game_state = GameState {
             game,
-            last_update_time: std::time::Instant::now(),
+            last_update_time: now,
             pressed_keys: HashSet::new(),
             mouse_delta: (0.0, 0.0),
             mouse_position: (0.0, 0.0),
             right_mouse_pressed: false,
             left_mouse_pressed: false,
+            middle_mouse_pressed: false,
             camera_speed: 5.0,
+            frame_count: 0,
+            fps_timer: now,
+            current_fps: 0.0,
         };
 
         // Show cursor by default so user can interact with ImGui
@@ -146,13 +155,30 @@ impl Engine {
                             }
                         }
                     }
+
+                    if button == MouseButton::Middle && !self.renderer.imgui_wants_mouse() {
+                        match state {
+                            ElementState::Pressed => {
+                                game_state.middle_mouse_pressed = true;
+                                self.renderer.window().set_cursor_visible(false);
+                                let _ = self.renderer.window().set_cursor_grab(winit::window::CursorGrabMode::Confined);
+                            }
+                            ElementState::Released => {
+                                game_state.middle_mouse_pressed = false;
+                                self.renderer.window().set_cursor_visible(true);
+                                let _ = self.renderer.window().set_cursor_grab(winit::window::CursorGrabMode::None);
+                                // Reset mouse delta when releasing button
+                                game_state.mouse_delta = (0.0, 0.0);
+                            }
+                        }
+                    }
                 }
                 Event::DeviceEvent {
                     event: DeviceEvent::MouseMotion { delta },
                     ..
                 } => {
-                    // Only accumulate mouse delta when right mouse button is pressed
-                    if game_state.right_mouse_pressed {
+                    // Accumulate mouse delta when right or middle mouse button is pressed
+                    if game_state.right_mouse_pressed || game_state.middle_mouse_pressed {
                         game_state.mouse_delta.0 += delta.0;
                         game_state.mouse_delta.1 += delta.1;
                     }
@@ -171,6 +197,22 @@ impl Engine {
                     match state {
                         ElementState::Pressed => {
                             game_state.pressed_keys.insert(key_code);
+
+                            // Gizmo mode hotkeys (1, 2, 3) - only if not typing in ImGui
+                            if !self.renderer.imgui_wants_keyboard() {
+                                match key_code {
+                                    KeyCode::Digit1 => {
+                                        game_state.game.gizmo_state.mode = crate::gizmo::GizmoMode::Translate;
+                                    }
+                                    KeyCode::Digit2 => {
+                                        game_state.game.gizmo_state.mode = crate::gizmo::GizmoMode::Rotate;
+                                    }
+                                    KeyCode::Digit3 => {
+                                        game_state.game.gizmo_state.mode = crate::gizmo::GizmoMode::Scale;
+                                    }
+                                    _ => {}
+                                }
+                            }
                         }
                         ElementState::Released => {
                             game_state.pressed_keys.remove(&key_code);
@@ -212,6 +254,20 @@ impl Engine {
 
                     game_state.game.update(delta_time);
 
+                    // Update FPS counter
+                    game_state.frame_count += 1;
+                    let elapsed = game_state.fps_timer.elapsed().as_secs_f32();
+                    if elapsed >= 1.0 {
+                        game_state.current_fps = game_state.frame_count as f32 / elapsed;
+                        game_state.frame_count = 0;
+                        game_state.fps_timer = std::time::Instant::now();
+                    }
+
+                    // Update window title with FPS and dirty indicator
+                    let dirty_indicator = if game_state.game.is_dirty() { " *" } else { "" };
+                    let title = format!("Tribal Engine - {:.0} FPS{}", game_state.current_fps, dirty_indicator);
+                    self.renderer.window().set_title(&title);
+
                     // Render with game state
                     if let Err(e) = self.renderer.render(&mut game_state.game) {
                         eprintln!("Render error: {}", e);
@@ -227,10 +283,21 @@ impl Engine {
 }
 
 fn process_input(game_state: &mut GameState, delta_time: f32) {
-    // Mouse camera rotation - only when right mouse button is pressed
+    // Mouse camera controls
     let mouse_sensitivity = 0.002;
+
+    // Right mouse - free camera rotation
     if game_state.right_mouse_pressed && (game_state.mouse_delta.0 != 0.0 || game_state.mouse_delta.1 != 0.0) {
         game_state.game.rotate_camera(
+            -(game_state.mouse_delta.1 as f32) * mouse_sensitivity,  // Pitch (vertical)
+            -(game_state.mouse_delta.0 as f32) * mouse_sensitivity,  // Yaw (horizontal)
+        );
+        game_state.mouse_delta = (0.0, 0.0);
+    }
+
+    // Middle mouse - orbit around selected object
+    if game_state.middle_mouse_pressed && (game_state.mouse_delta.0 != 0.0 || game_state.mouse_delta.1 != 0.0) {
+        game_state.game.orbit_camera_around_selected(
             -(game_state.mouse_delta.1 as f32) * mouse_sensitivity,  // Pitch (vertical)
             -(game_state.mouse_delta.0 as f32) * mouse_sensitivity,  // Yaw (horizontal)
         );

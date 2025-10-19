@@ -19,24 +19,26 @@ pub struct SkyboxRenderer {
     pub descriptor_sets: Vec<vk::DescriptorSet>,
 }
 
-/// Uniform buffer object for skybox shader
+/// Uniform buffer object for skybox shader (std140 layout)
+/// Matches nebula pattern - vec3 followed by scalar fills the padding slot
 #[repr(C)]
-#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+#[derive(Copy, Clone)]
 pub struct SkyboxUniformBufferObject {
     pub model: Mat4,
     pub view: Mat4,
     pub proj: Mat4,
     pub view_pos: Vec3,
-    pub star_density: f32,
+    pub star_density: f32,           // fills vec3 padding slot
     pub star_brightness: f32,
-    pub _padding1: f32,
-    pub _padding2: f32,
-    pub _padding3: f32,
+    pub _pad0: [f32; 2],             // align next vec3 to 16 bytes
     pub nebula_primary_color: Vec3,
-    pub nebula_intensity: f32,
+    pub nebula_intensity: f32,       // fills vec3 padding slot
     pub nebula_secondary_color: Vec3,
-    pub background_brightness: f32,
+    pub background_brightness: f32,  // fills vec3 padding slot
 }
+
+unsafe impl bytemuck::Pod for SkyboxUniformBufferObject {}
+unsafe impl bytemuck::Zeroable for SkyboxUniformBufferObject {}
 
 impl SkyboxRenderer {
     /// Create uniform buffer object from config
@@ -53,9 +55,7 @@ impl SkyboxRenderer {
             view_pos,
             star_density: config.star_density,
             star_brightness: config.star_brightness,
-            _padding1: 0.0,
-            _padding2: 0.0,
-            _padding3: 0.0,
+            _pad0: [0.0; 2],
             nebula_primary_color: config.nebula_primary_color,
             nebula_intensity: config.nebula_intensity,
             nebula_secondary_color: config.nebula_secondary_color,

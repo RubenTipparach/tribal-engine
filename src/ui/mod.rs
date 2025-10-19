@@ -27,6 +27,9 @@ impl UiManager {
         let mut load_clicked = false;
         let mut reset_clicked = false;
 
+        // Store original config to detect changes
+        let orig_config = game.skybox_config.clone();
+
         GuiPanelBuilder::new(ui, "Skybox Settings")
             .size(350.0, 500.0)
             .position(270.0, 10.0)
@@ -52,14 +55,26 @@ impl UiManager {
                 reset_clicked = r;
             });
 
+        // Check if config changed
+        if orig_config.star_density != game.skybox_config.star_density
+            || orig_config.star_brightness != game.skybox_config.star_brightness
+            || orig_config.nebula_intensity != game.skybox_config.nebula_intensity
+            || orig_config.nebula_primary_color != game.skybox_config.nebula_primary_color
+            || orig_config.nebula_secondary_color != game.skybox_config.nebula_secondary_color
+            || orig_config.background_brightness != game.skybox_config.background_brightness
+        {
+            game.mark_config_dirty();
+        }
+
         if save_clicked {
-            Self::save_skybox_config(&game.skybox_config);
+            Self::save_skybox_config(game);
         }
         if load_clicked {
             Self::load_skybox_config(game);
         }
         if reset_clicked {
             game.skybox_config = SkyboxConfig::default();
+            game.mark_config_dirty();
         }
     }
 
@@ -68,6 +83,9 @@ impl UiManager {
         let mut save_clicked = false;
         let mut load_clicked = false;
         let mut reset_clicked = false;
+
+        // Store original config to detect changes
+        let orig_config = game.nebula_config.clone();
 
         GuiPanelBuilder::new(ui, "Nebula Settings")
             .size(380.0, 450.0)
@@ -105,14 +123,31 @@ impl UiManager {
                 reset_clicked = r;
             });
 
+        // Check if config changed
+        if orig_config.scale != game.nebula_config.scale
+            || orig_config.zoom != game.nebula_config.zoom
+            || orig_config.density != game.nebula_config.density
+            || orig_config.brightness != game.nebula_config.brightness
+            || orig_config.color_center != game.nebula_config.color_center
+            || orig_config.color_edge != game.nebula_config.color_edge
+            || orig_config.color_density_low != game.nebula_config.color_density_low
+            || orig_config.color_density_high != game.nebula_config.color_density_high
+            || orig_config.light_color != game.nebula_config.light_color
+            || orig_config.light_intensity != game.nebula_config.light_intensity
+            || orig_config.max_distance != game.nebula_config.max_distance
+        {
+            game.mark_config_dirty();
+        }
+
         if save_clicked {
-            Self::save_nebula_config(&game.nebula_config);
+            Self::save_nebula_config(game);
         }
         if load_clicked {
             Self::load_nebula_config(game);
         }
         if reset_clicked {
             game.nebula_config = NebulaConfig::default();
+            game.mark_config_dirty();
         }
     }
 
@@ -121,12 +156,15 @@ impl UiManager {
         let mut save_scene_clicked = false;
         let mut load_scene_clicked = false;
         let mut clicked_obj_id: Option<usize> = None;
+        let mut double_clicked_obj_id: Option<usize> = None;
+        let mut duplicate_object_id: Option<usize> = None;
 
         GuiPanelBuilder::new(ui, "Scene Hierarchy")
-            .size(250.0, 400.0)
+            .size(250.0, 480.0)
             .position(10.0, 10.0)
             .build(|content| {
                 content.text("Select objects to edit");
+                content.text_disabled("Click selected to focus");
                 content.separator();
 
                 // Collect object data first to avoid borrow issues
@@ -147,15 +185,48 @@ impl UiManager {
                     };
 
                     if ui.selectable(&label) {
-                        clicked_obj_id = Some(id);
+                        // If clicking already selected object, focus on it
+                        if is_selected {
+                            double_clicked_obj_id = Some(id);
+                        } else {
+                            clicked_obj_id = Some(id);
+                        }
                     }
+
+                    // Check for double-click (also focuses)
+                    if ui.is_item_hovered() && ui.is_mouse_double_clicked(imgui::MouseButton::Left) {
+                        double_clicked_obj_id = Some(id);
+                    }
+                }
+
+                // Object manipulation buttons
+                content.separator();
+                content.header("Object Actions");
+
+                // Duplicate button - only enabled if an object is selected
+                let selected_id = game.scene.selected_object_id();
+                if let Some(id) = selected_id {
+                    // Check if the selected object is duplicatable
+                    let can_duplicate = game.scene.get_object(id)
+                        .map(|obj| !matches!(obj.object_type, crate::scene::ObjectType::Skybox | crate::scene::ObjectType::Nebula))
+                        .unwrap_or(false);
+
+                    if can_duplicate {
+                        if ui.button("Duplicate") {
+                            duplicate_object_id = Some(id);
+                        }
+                    } else {
+                        ui.text_disabled("Cannot duplicate");
+                    }
+                } else {
+                    ui.text_disabled("Select object first");
                 }
 
                 // Gizmo controls integrated here
                 content.separator();
                 content.header("Transform Tools");
 
-                if ui.button("Translate (W)") {
+                if ui.button("Translate (1)") {
                     game.gizmo_state.mode = GizmoMode::Translate;
                 }
                 ui.same_line();
@@ -165,7 +236,7 @@ impl UiManager {
                     ui.text("[ ]");
                 }
 
-                if ui.button("Rotate (E)") {
+                if ui.button("Rotate (2)") {
                     game.gizmo_state.mode = GizmoMode::Rotate;
                 }
                 ui.same_line();
@@ -175,7 +246,7 @@ impl UiManager {
                     ui.text("[ ]");
                 }
 
-                if ui.button("Scale (R)") {
+                if ui.button("Scale (3)") {
                     game.gizmo_state.mode = GizmoMode::Scale;
                 }
                 ui.same_line();
@@ -187,6 +258,16 @@ impl UiManager {
 
                 content.checkbox("Show Gizmo", &mut game.gizmo_state.enabled);
 
+                // Camera up vector controls
+                content.separator();
+                content.header("Camera Up Vector");
+
+                content.checkbox("Lock to World Y", &mut game.lock_camera_up);
+
+                if ui.button("Reset Up Vector") {
+                    game.reset_camera_up();
+                }
+
                 content.separator();
                 let (s, l, _) = content.config_buttons();
                 save_scene_clicked = s;
@@ -197,8 +278,22 @@ impl UiManager {
             game.scene.select_object(id);
         }
 
+        // Handle double-click to focus on object
+        if let Some(id) = double_clicked_obj_id {
+            game.scene.select_object(id);
+            game.focus_on_object(id);
+        }
+
+        // Handle duplicate
+        if let Some(id) = duplicate_object_id {
+            if let Some(new_id) = game.scene.duplicate_object(id) {
+                game.scene.select_object(new_id);
+                game.mark_scene_dirty();
+            }
+        }
+
         if save_scene_clicked {
-            Self::save_scene(&game);
+            Self::save_scene(game);
         }
         if load_scene_clicked {
             Self::load_scene(game);
@@ -209,6 +304,7 @@ impl UiManager {
     pub fn build_transform_editor(ui: &Ui, game: &mut Game) {
         let window_width = ui.io().display_size[0];
         let panel_width = 350.0;
+        let mut transform_changed = false;
 
         GuiPanelBuilder::new(ui, "Transform")
             .size(panel_width, 320.0)
@@ -220,6 +316,12 @@ impl UiManager {
                     ui.same_line();
                     content.text(&obj.name);
                     content.separator();
+
+                    // Store original values to detect changes
+                    let orig_visible = obj.visible;
+                    let orig_position = obj.transform.position;
+                    let orig_scale = obj.transform.scale;
+                    let (orig_pitch, orig_yaw, orig_roll) = obj.transform.euler_angles();
 
                     // Visibility
                     content.checkbox("Visible", &mut obj.visible);
@@ -251,6 +353,17 @@ impl UiManager {
                     content.header("Scale");
                     content.input_vec3("Scale", &mut obj.transform.scale);
 
+                    // Check if anything changed
+                    if orig_visible != obj.visible
+                        || orig_position != obj.transform.position
+                        || orig_scale != obj.transform.scale
+                        || orig_pitch != pitch_deg.to_radians()
+                        || orig_yaw != yaw_deg.to_radians()
+                        || orig_roll != roll_deg.to_radians()
+                    {
+                        transform_changed = true;
+                    }
+
                     // Show object-specific settings hint
                     content.separator();
                     match obj.object_type {
@@ -271,6 +384,11 @@ impl UiManager {
                     content.text("the Scene Hierarchy");
                 }
             });
+
+        // Mark scene as dirty if transform changed
+        if transform_changed {
+            game.mark_scene_dirty();
+        }
     }
 
     /// Build gizmo toolbar
@@ -283,7 +401,7 @@ impl UiManager {
                 content.separator();
 
                 // Gizmo mode buttons (using regular buttons as radio)
-                if ui.button("Translate (W)") {
+                if ui.button("Translate (1)") {
                     game.gizmo_state.mode = GizmoMode::Translate;
                 }
                 ui.same_line();
@@ -293,7 +411,7 @@ impl UiManager {
                     ui.text("[ ]");
                 }
 
-                if ui.button("Rotate (E)") {
+                if ui.button("Rotate (2)") {
                     game.gizmo_state.mode = GizmoMode::Rotate;
                 }
                 ui.same_line();
@@ -303,7 +421,7 @@ impl UiManager {
                     ui.text("[ ]");
                 }
 
-                if ui.button("Scale (R)") {
+                if ui.button("Scale (3)") {
                     game.gizmo_state.mode = GizmoMode::Scale;
                 }
                 ui.same_line();
@@ -320,25 +438,52 @@ impl UiManager {
 
     /// Render object hover info overlay (only when nothing is selected)
     pub fn render_object_info(ui: &Ui, game: &Game) {
-        // Only show hover tooltip if no object is currently selected
-        if game.scene.selected_object().is_none() {
-            if let Some(hovered_id) = game.object_picker.hovered_object {
-                if let Some(obj) = game.scene.get_object(hovered_id) {
-                    ui.window("##hover_overlay")
-                        .position([10.0, ui.io().display_size[1] - 80.0], imgui::Condition::Always)
-                        .size([250.0, 60.0], imgui::Condition::Always)
-                        .no_decoration()
-                        .bg_alpha(0.9)
-                        .build(|| {
-                            ui.text_colored([1.0, 1.0, 0.0, 1.0], "Hovering:");
-                            ui.same_line();
-                            ui.text(&obj.name);
+        // Show hover tooltip whenever hovering over an object
+        if let Some(hovered_id) = game.object_picker.hovered_object {
+            if let Some(obj) = game.scene.get_object(hovered_id) {
+                let is_selected = game.scene.selected_object_id() == Some(hovered_id);
+                let label = if is_selected {
+                    format!("Selected: {}", obj.name)
+                } else {
+                    format!("Hovering: {}", obj.name)
+                };
+
+                ui.window("##hover_overlay")
+                    .position([10.0, ui.io().display_size[1] - 80.0], imgui::Condition::Always)
+                    .size([250.0, 60.0], imgui::Condition::Always)
+                    .no_decoration()
+                    .bg_alpha(0.9)
+                    .build(|| {
+                        if is_selected {
+                            ui.text_colored([0.0, 1.0, 0.0, 1.0], &label);
+                        } else {
+                            ui.text_colored([1.0, 1.0, 0.0, 1.0], &label);
                             ui.text_disabled("Click to select");
-                        });
-                }
+                        }
+                    });
             }
         }
         // Selected object info is now shown in the Transform panel (top-right)
+    }
+
+    /// Render notifications in the lower right corner
+    pub fn render_notifications(ui: &Ui, game: &Game) {
+        let screen_width = ui.io().display_size[0];
+        let screen_height = ui.io().display_size[1];
+
+        for (i, notification) in game.notifications.iter().enumerate() {
+            let y_offset = 10.0 + (i as f32 * 70.0);
+            let alpha = (notification.time_remaining / 2.0).min(1.0); // Fade out in last 2 seconds
+
+            ui.window(&format!("##notification_{}", i))
+                .position([screen_width - 260.0, screen_height - y_offset - 60.0], imgui::Condition::Always)
+                .size([250.0, 50.0], imgui::Condition::Always)
+                .no_decoration()
+                .bg_alpha(0.9 * alpha)
+                .build(|| {
+                    ui.text_colored([0.2, 1.0, 0.2, alpha], &notification.message);
+                });
+        }
     }
 
     /// Build all UI panels
@@ -348,12 +493,15 @@ impl UiManager {
         // Show object hover/selection info overlay
         Self::render_object_info(&ui, game);
 
+        // Show notifications in lower right
+        Self::render_notifications(&ui, game);
+
         // Always show scene hierarchy and transform editor
         Self::build_scene_hierarchy(&ui, game);
         Self::build_transform_editor(&ui, game);
 
         // Show object-specific panels ONLY when that object is selected
-        let selected_type = game.scene.selected_object().map(|obj| obj.object_type);
+        let selected_type = game.scene.selected_object().map(|obj| obj.object_type.clone());
 
         match selected_type {
             Some(ObjectType::Skybox) => Self::build_skybox_settings(&ui, game),
@@ -371,13 +519,16 @@ impl UiManager {
 
     // Config save/load helper functions
 
-    fn save_skybox_config(config: &SkyboxConfig) {
+    fn save_skybox_config(game: &mut Game) {
         let mut engine_config = EngineConfig::load_or_default(CONFIG_PATH);
-        engine_config.skybox = config.into();
+        engine_config.skybox = (&game.skybox_config).into();
         if let Err(e) = engine_config.save(CONFIG_PATH) {
             eprintln!("Failed to save skybox config: {}", e);
+            game.add_notification("Failed to save skybox config".to_string(), 3.0);
         } else {
             println!("Skybox config saved to {}", CONFIG_PATH);
+            game.config_dirty = false;
+            game.add_notification("Skybox config saved".to_string(), 2.0);
         }
     }
 
@@ -386,18 +537,26 @@ impl UiManager {
             Ok(config) => {
                 game.skybox_config = config.skybox.into();
                 println!("Skybox config loaded from {}", CONFIG_PATH);
+                game.config_dirty = false;
+                game.add_notification("Skybox config loaded".to_string(), 2.0);
             }
-            Err(e) => eprintln!("Failed to load skybox config: {}", e),
+            Err(e) => {
+                eprintln!("Failed to load skybox config: {}", e);
+                game.add_notification("Failed to load skybox config".to_string(), 3.0);
+            }
         }
     }
 
-    fn save_nebula_config(config: &NebulaConfig) {
+    fn save_nebula_config(game: &mut Game) {
         let mut engine_config = EngineConfig::load_or_default(CONFIG_PATH);
-        engine_config.nebula = config.into();
+        engine_config.nebula = (&game.nebula_config).into();
         if let Err(e) = engine_config.save(CONFIG_PATH) {
             eprintln!("Failed to save nebula config: {}", e);
+            game.add_notification("Failed to save nebula config".to_string(), 3.0);
         } else {
             println!("Nebula config saved to {}", CONFIG_PATH);
+            game.config_dirty = false;
+            game.add_notification("Nebula config saved".to_string(), 2.0);
         }
     }
 
@@ -406,8 +565,13 @@ impl UiManager {
             Ok(config) => {
                 game.nebula_config = config.nebula.into();
                 println!("Nebula config loaded from {}", CONFIG_PATH);
+                game.config_dirty = false;
+                game.add_notification("Nebula config loaded".to_string(), 2.0);
             }
-            Err(e) => eprintln!("Failed to load nebula config: {}", e),
+            Err(e) => {
+                eprintln!("Failed to load nebula config: {}", e);
+                game.add_notification("Failed to load nebula config".to_string(), 3.0);
+            }
         }
     }
 
@@ -442,12 +606,15 @@ impl UiManager {
     }
 
     /// Save scene to file
-    fn save_scene(game: &Game) {
+    fn save_scene(game: &mut Game) {
         let scene_data = SceneData::from_scene_graph(&game.scene);
         if let Err(e) = scene_data.save(SCENE_PATH) {
             eprintln!("Failed to save scene: {}", e);
+            game.add_notification("Failed to save scene".to_string(), 3.0);
         } else {
             println!("Scene saved to {}", SCENE_PATH);
+            game.scene_dirty = false;
+            game.add_notification("Scene saved".to_string(), 2.0);
         }
     }
 
@@ -457,15 +624,20 @@ impl UiManager {
             Ok(scene_data) => {
                 game.scene = scene_data.to_scene_graph();
                 println!("Scene loaded from {}", SCENE_PATH);
+                game.scene_dirty = false;
+                game.add_notification("Scene loaded".to_string(), 2.0);
             }
-            Err(e) => eprintln!("Failed to load scene: {}", e),
+            Err(e) => {
+                eprintln!("Failed to load scene: {}", e);
+                game.add_notification("Failed to load scene".to_string(), 3.0);
+            }
         }
     }
 
-    /// Load scene on startup
+    /// Load scene on startup with intelligent merging
     pub fn load_scene_on_startup(game: &mut Game) {
-        let scene_data = SceneData::load_or_default(SCENE_PATH);
+        let scene_data = SceneData::load_and_merge_with_default(SCENE_PATH);
         game.scene = scene_data.to_scene_graph();
-        println!("Scene loaded from {}", SCENE_PATH);
+        println!("Scene initialized from {}", SCENE_PATH);
     }
 }

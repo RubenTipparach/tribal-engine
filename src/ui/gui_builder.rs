@@ -65,6 +65,11 @@ impl<'a> GuiContentBuilder<'a> {
         self
     }
 
+    pub fn text_disabled(&mut self, text: &str) -> &mut Self {
+        self.ui.text_disabled(text);
+        self
+    }
+
     pub fn separator(&mut self) -> &mut Self {
         self.ui.separator();
         self
