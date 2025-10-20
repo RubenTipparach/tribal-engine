@@ -10,6 +10,7 @@ pub struct EngineConfig {
     pub nebula: NebulaConfigData,
     pub skybox: SkyboxConfigData,
     pub camera: CameraConfigData,
+    pub ssao: SSAOConfigData,
 }
 
 impl Default for EngineConfig {
@@ -18,6 +19,7 @@ impl Default for EngineConfig {
             nebula: NebulaConfigData::default(),
             skybox: SkyboxConfigData::default(),
             camera: CameraConfigData::default(),
+            ssao: SSAOConfigData::default(),
         }
     }
 }
@@ -151,6 +153,28 @@ impl Default for CameraConfigData {
             move_speed: 5.0,
             mouse_sensitivity: 0.003,
             fov: 70.0,
+        }
+    }
+}
+
+/// SSAO configuration (serializable)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SSAOConfigData {
+    pub enabled: bool,
+    pub radius: f32,
+    pub bias: f32,
+    pub power: f32,
+    pub kernel_size: u32,
+}
+
+impl Default for SSAOConfigData {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            radius: 1.0,
+            bias: 0.1,
+            power: 2.0,
+            kernel_size: 64,
         }
     }
 }

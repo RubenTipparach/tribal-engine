@@ -1,13 +1,26 @@
 use glam::Vec3;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct DirectionalLight {
     pub direction: Vec3,
     pub color: Vec3,
     pub intensity: f32,
+    pub shadow_color: Vec3, // Ambient/shadow color
 }
 
-#[derive(Debug, Clone, Copy)]
+impl Default for DirectionalLight {
+    fn default() -> Self {
+        Self {
+            direction: Vec3::new(0.0, -1.0, 0.0),
+            color: Vec3::new(1.0, 1.0, 1.0),
+            intensity: 1.0,
+            shadow_color: Vec3::new(0.1, 0.1, 0.15),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct PointLight {
     pub position: Vec3,
     pub color: Vec3,

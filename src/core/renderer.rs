@@ -24,7 +24,8 @@ struct MeshPushConstants {
     albedo: glam::Vec3,          // 12 bytes
     metallic: f32,               // 4 bytes
     roughness: f32,              // 4 bytes
-    ao_intensity: f32,           // 4 bytes
+    ambient_strength: f32,       // 4 bytes
+    gi_strength: f32,            // 4 bytes
 }
 
 unsafe impl bytemuck::Pod for MeshPushConstants {}
@@ -112,6 +113,38 @@ pub struct VulkanRenderer {
     depth_image_memory: vk::DeviceMemory,
     depth_image_view: vk::ImageView,
     depth_sampler: vk::Sampler,
+    // SSAO resources
+    ssao_image: vk::Image,
+    ssao_image_memory: vk::DeviceMemory,
+    ssao_image_view: vk::ImageView,
+    ssao_blur_image: vk::Image,
+    ssao_blur_image_memory: vk::DeviceMemory,
+    ssao_blur_image_view: vk::ImageView,
+    ssao_sampler: vk::Sampler,
+    ssao_render_pass: vk::RenderPass,
+    ssao_framebuffer: vk::Framebuffer,
+    ssao_descriptor_set_layout: vk::DescriptorSetLayout,
+    ssao_pipeline_layout: vk::PipelineLayout,
+    ssao_pipeline: vk::Pipeline,
+    ssao_uniform_buffers: Vec<vk::Buffer>,
+    ssao_uniform_buffers_memory: Vec<vk::DeviceMemory>,
+    ssao_descriptor_pool: vk::DescriptorPool,
+    ssao_descriptor_sets: Vec<vk::DescriptorSet>,
+    ssao_blur_render_pass: vk::RenderPass,
+    ssao_blur_framebuffer: vk::Framebuffer,
+    ssao_blur_descriptor_set_layout: vk::DescriptorSetLayout,
+    ssao_blur_pipeline_layout: vk::PipelineLayout,
+    ssao_blur_pipeline: vk::Pipeline,
+    ssao_blur_descriptor_pool: vk::DescriptorPool,
+    ssao_blur_descriptor_sets: Vec<vk::DescriptorSet>,
+    // Intermediate texture for horizontal blur pass (vertical pass reads from this)
+    ssao_blur_intermediate_image: vk::Image,
+    ssao_blur_intermediate_image_memory: vk::DeviceMemory,
+    ssao_blur_intermediate_image_view: vk::ImageView,
+    ssao_blur_horizontal_render_pass: vk::RenderPass,
+    ssao_blur_horizontal_framebuffer: vk::Framebuffer,
+    ssao_blur_horizontal_descriptor_pool: vk::DescriptorPool,
+    ssao_blur_horizontal_descriptor_sets: Vec<vk::DescriptorSet>,
     directional_light: DirectionalLight,
     point_lights: Vec<PointLight>,
     // ImGui
@@ -131,8 +164,19 @@ struct UniformBufferObject {
     _padding2: f32,
     dir_light_color: Vec3,
     dir_light_intensity: f32,
+    dir_light_shadow_color: Vec3,
+    star_density: f32,
+    star_brightness: f32,
+    _pad0: f32,
+    _pad1: f32,
+    _pad2: f32,
+    nebula_primary_color: Vec3,
+    nebula_intensity: f32,
+    nebula_secondary_color: Vec3,
+    background_brightness: f32,
     point_light_count: u32,
-    _padding3: [u32; 3],
+    ssao_enabled: u32,
+    _padding3: [u32; 2],
 }
 
 #[repr(C)]
@@ -150,6 +194,17 @@ struct PointLightData {
     _padding: f32,
     color: Vec3,
     intensity: f32,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct SSAOUniformBufferObject {
+    proj: Mat4,             // 64 bytes, offset 0
+    ssao_radius: f32,       // 4 bytes, offset 64
+    ssao_bias: f32,         // 4 bytes, offset 68
+    ssao_power: f32,        // 4 bytes, offset 72
+    ssao_kernel_size: u32,  // 4 bytes, offset 76
+    // Total: 80 bytes (needs padding to 16-byte alignment)
 }
 
 const MAX_POINT_LIGHTS: usize = 4;
@@ -258,6 +313,116 @@ impl VulkanRenderer {
             // Create depth sampler for nebula
             let depth_sampler = Self::create_depth_sampler(&device)?;
 
+            // Create SSAO resources
+            let (ssao_image, ssao_image_memory, ssao_image_view) = Self::create_ssao_image(
+                &instance,
+                physical_device,
+                &device,
+                swapchain_extent,
+            )?;
+            let (ssao_blur_image, ssao_blur_image_memory, ssao_blur_image_view) = Self::create_ssao_image(
+                &instance,
+                physical_device,
+                &device,
+                swapchain_extent,
+            )?;
+            // Intermediate texture for horizontal blur pass
+            let (ssao_blur_intermediate_image, ssao_blur_intermediate_image_memory, ssao_blur_intermediate_image_view) = Self::create_ssao_image(
+                &instance,
+                physical_device,
+                &device,
+                swapchain_extent,
+            )?;
+            let ssao_sampler = Self::create_ssao_sampler(&device)?;
+
+            // Create SSAO render passes and pipelines
+            let ssao_render_pass = Self::create_ssao_render_pass(&device)?;
+            let ssao_blur_render_pass = Self::create_ssao_render_pass(&device)?; // Vertical blur pass
+            let ssao_blur_horizontal_render_pass = Self::create_ssao_render_pass(&device)?; // Horizontal blur pass
+
+            let ssao_framebuffer = Self::create_ssao_framebuffer(
+                &device,
+                ssao_render_pass,
+                ssao_image_view,
+                swapchain_extent,
+            )?;
+            // Horizontal blur writes to intermediate texture
+            let ssao_blur_horizontal_framebuffer = Self::create_ssao_framebuffer(
+                &device,
+                ssao_blur_horizontal_render_pass,
+                ssao_blur_intermediate_image_view,
+                swapchain_extent,
+            )?;
+            // Vertical blur reads from intermediate and writes to final blur texture
+            let ssao_blur_framebuffer = Self::create_ssao_framebuffer(
+                &device,
+                ssao_blur_render_pass,
+                ssao_blur_image_view,
+                swapchain_extent,
+            )?;
+
+            let ssao_descriptor_set_layout = Self::create_ssao_descriptor_set_layout(&device)?;
+            let ssao_blur_descriptor_set_layout = Self::create_ssao_blur_descriptor_set_layout(&device)?;
+
+            let (ssao_pipeline_layout, ssao_pipeline) = Self::create_ssao_pipeline(
+                &device,
+                swapchain_extent,
+                ssao_render_pass,
+                ssao_descriptor_set_layout,
+            )?;
+            let (ssao_blur_pipeline_layout, ssao_blur_pipeline) = Self::create_ssao_blur_pipeline(
+                &device,
+                swapchain_extent,
+                ssao_blur_render_pass,
+                ssao_blur_descriptor_set_layout,
+            )?;
+
+            // Create SSAO uniform buffers (reuse same UBO as main rendering)
+            let (ssao_uniform_buffers, ssao_uniform_buffers_memory) = Self::create_uniform_buffers(
+                &instance,
+                physical_device,
+                &device,
+                MAX_FRAMES_IN_FLIGHT,
+            )?;
+
+            // Create SSAO descriptor pools and sets
+            let ssao_descriptor_pool = Self::create_ssao_descriptor_pool(&device, MAX_FRAMES_IN_FLIGHT)?;
+            let ssao_descriptor_sets = Self::create_ssao_descriptor_sets(
+                &device,
+                ssao_descriptor_pool,
+                ssao_descriptor_set_layout,
+                &ssao_uniform_buffers,
+                depth_image_view,
+                depth_sampler,
+                MAX_FRAMES_IN_FLIGHT,
+            )?;
+
+            // Horizontal blur: reads from SSAO, writes to intermediate
+            let ssao_blur_horizontal_descriptor_pool = Self::create_ssao_blur_descriptor_pool(&device, MAX_FRAMES_IN_FLIGHT)?;
+            let ssao_blur_horizontal_descriptor_sets = Self::create_ssao_blur_descriptor_sets(
+                &device,
+                ssao_blur_horizontal_descriptor_pool,
+                ssao_blur_descriptor_set_layout,
+                ssao_image_view,
+                ssao_sampler,
+                depth_image_view,
+                depth_sampler,
+                MAX_FRAMES_IN_FLIGHT,
+            )?;
+
+            // Vertical blur: reads from intermediate, writes to final
+            let ssao_blur_descriptor_pool = Self::create_ssao_blur_descriptor_pool(&device, MAX_FRAMES_IN_FLIGHT)?;
+            let ssao_blur_descriptor_sets = Self::create_ssao_blur_descriptor_sets(
+                &device,
+                ssao_blur_descriptor_pool,
+                ssao_blur_descriptor_set_layout,
+                ssao_blur_intermediate_image_view,
+                ssao_sampler,
+                depth_image_view,
+                depth_sampler,
+                MAX_FRAMES_IN_FLIGHT,
+            )?;
+
             // Create framebuffers
             let framebuffers = Self::create_framebuffers(
                 &device,
@@ -315,6 +480,8 @@ impl VulkanRenderer {
                 descriptor_pool,
                 descriptor_set_layout,
                 &uniform_buffers,
+                ssao_blur_image_view,
+                ssao_sampler,
                 MAX_FRAMES_IN_FLIGHT,
             )?;
             
@@ -514,6 +681,8 @@ impl VulkanRenderer {
                 gizmo_descriptor_pool,
                 gizmo_descriptor_set_layout,
                 &gizmo_uniform_buffers,
+                ssao_blur_image_view,
+                ssao_sampler,
                 MAX_FRAMES_IN_FLIGHT,
             )?;
 
@@ -529,6 +698,7 @@ impl VulkanRenderer {
                 direction: Vec3::new(-0.3, -1.0, -0.3).normalize(),
                 color: Vec3::new(1.0, 0.95, 0.9),
                 intensity: 1.0,
+                shadow_color: Vec3::new(0.1, 0.1, 0.15),
             };
             
             let point_lights = vec![
@@ -671,6 +841,36 @@ impl VulkanRenderer {
                 depth_image_memory,
                 depth_image_view,
                 depth_sampler,
+                ssao_image,
+                ssao_image_memory,
+                ssao_image_view,
+                ssao_blur_image,
+                ssao_blur_image_memory,
+                ssao_blur_image_view,
+                ssao_sampler,
+                ssao_render_pass,
+                ssao_framebuffer,
+                ssao_descriptor_set_layout,
+                ssao_pipeline_layout,
+                ssao_pipeline,
+                ssao_uniform_buffers,
+                ssao_uniform_buffers_memory,
+                ssao_descriptor_pool,
+                ssao_descriptor_sets,
+                ssao_blur_render_pass,
+                ssao_blur_framebuffer,
+                ssao_blur_descriptor_set_layout,
+                ssao_blur_pipeline_layout,
+                ssao_blur_pipeline,
+                ssao_blur_descriptor_pool,
+                ssao_blur_descriptor_sets,
+                ssao_blur_intermediate_image,
+                ssao_blur_intermediate_image_memory,
+                ssao_blur_intermediate_image_view,
+                ssao_blur_horizontal_render_pass,
+                ssao_blur_horizontal_framebuffer,
+                ssao_blur_horizontal_descriptor_pool,
+                ssao_blur_horizontal_descriptor_sets,
                 directional_light,
                 point_lights,
                 imgui_context,
@@ -1040,14 +1240,65 @@ impl VulkanRenderer {
             .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
             .descriptor_count(1)
             .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT);
-            
-            let bindings = [ubo_binding];
+
+            // Binding 1: SSAO texture sampler
+            let ssao_binding = vk::DescriptorSetLayoutBinding::default()
+                .binding(1)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT);
+
+            let bindings = [ubo_binding, ssao_binding];
             let create_info = vk::DescriptorSetLayoutCreateInfo::default()
             .bindings(&bindings);
-            
+
             Ok(device.create_descriptor_set_layout(&create_info, None)?)
         }
-        
+
+        unsafe fn create_ssao_descriptor_set_layout(device: &ash::Device) -> anyhow::Result<vk::DescriptorSetLayout> {
+            // Binding 0: UBO for view/proj matrices and SSAO parameters
+            let ubo_binding = vk::DescriptorSetLayoutBinding::default()
+                .binding(0)
+                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT);
+
+            // Binding 1: Depth texture sampler
+            let depth_binding = vk::DescriptorSetLayoutBinding::default()
+                .binding(1)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT);
+
+            let bindings = [ubo_binding, depth_binding];
+            let create_info = vk::DescriptorSetLayoutCreateInfo::default()
+                .bindings(&bindings);
+
+            Ok(device.create_descriptor_set_layout(&create_info, None)?)
+        }
+
+        unsafe fn create_ssao_blur_descriptor_set_layout(device: &ash::Device) -> anyhow::Result<vk::DescriptorSetLayout> {
+            // Binding 0: SSAO texture sampler input
+            let ssao_binding = vk::DescriptorSetLayoutBinding::default()
+                .binding(0)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT);
+
+            // Binding 1: Depth texture for edge detection
+            let depth_binding = vk::DescriptorSetLayoutBinding::default()
+                .binding(1)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT);
+
+            let bindings = [ssao_binding, depth_binding];
+            let create_info = vk::DescriptorSetLayoutCreateInfo::default()
+                .bindings(&bindings);
+
+            Ok(device.create_descriptor_set_layout(&create_info, None)?)
+        }
+
         unsafe fn create_graphics_pipeline(
             device: &ash::Device,
             extent: vk::Extent2D,
@@ -1285,6 +1536,231 @@ impl VulkanRenderer {
             device.destroy_shader_module(frag_shader_module, None);
 
             Ok(pipelines[0])
+        }
+
+        unsafe fn create_ssao_pipeline(
+            device: &ash::Device,
+            extent: vk::Extent2D,
+            ssao_render_pass: vk::RenderPass,
+            descriptor_set_layout: vk::DescriptorSetLayout,
+        ) -> anyhow::Result<(vk::PipelineLayout, vk::Pipeline)> {
+            let vert_shader_code = include_bytes!("../../shaders/ssao.vert.spv");
+            let frag_shader_code = include_bytes!("../../shaders/ssao.frag.spv");
+
+            let vert_shader_module = Self::create_shader_module(device, vert_shader_code)?;
+            let frag_shader_module = Self::create_shader_module(device, frag_shader_code)?;
+
+            let entry_point = CString::new("main")?;
+
+            let vert_stage_info = vk::PipelineShaderStageCreateInfo::default()
+                .stage(vk::ShaderStageFlags::VERTEX)
+                .module(vert_shader_module)
+                .name(&entry_point);
+
+            let frag_stage_info = vk::PipelineShaderStageCreateInfo::default()
+                .stage(vk::ShaderStageFlags::FRAGMENT)
+                .module(frag_shader_module)
+                .name(&entry_point);
+
+            let shader_stages = [vert_stage_info, frag_stage_info];
+
+            // No vertex input - fullscreen triangle generated in vertex shader
+            let vertex_input_info = vk::PipelineVertexInputStateCreateInfo::default();
+
+            let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
+                .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
+                .primitive_restart_enable(false);
+
+            let viewport = vk::Viewport {
+                x: 0.0,
+                y: 0.0,
+                width: extent.width as f32,
+                height: extent.height as f32,
+                min_depth: 0.0,
+                max_depth: 1.0,
+            };
+
+            let scissor = vk::Rect2D {
+                offset: vk::Offset2D { x: 0, y: 0 },
+                extent,
+            };
+
+            let viewport_state = vk::PipelineViewportStateCreateInfo::default()
+                .viewports(std::slice::from_ref(&viewport))
+                .scissors(std::slice::from_ref(&scissor));
+
+            let rasterizer = vk::PipelineRasterizationStateCreateInfo::default()
+                .depth_clamp_enable(false)
+                .rasterizer_discard_enable(false)
+                .polygon_mode(vk::PolygonMode::FILL)
+                .line_width(1.0)
+                .cull_mode(vk::CullModeFlags::NONE)
+                .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
+                .depth_bias_enable(false);
+
+            let multisampling = vk::PipelineMultisampleStateCreateInfo::default()
+                .sample_shading_enable(false)
+                .rasterization_samples(vk::SampleCountFlags::TYPE_1);
+
+            // No depth test for SSAO pass
+            let depth_stencil = vk::PipelineDepthStencilStateCreateInfo::default()
+                .depth_test_enable(false)
+                .depth_write_enable(false);
+
+            let color_blend_attachment = vk::PipelineColorBlendAttachmentState::default()
+                .color_write_mask(vk::ColorComponentFlags::R) // Only write red channel
+                .blend_enable(false);
+
+            let color_blending = vk::PipelineColorBlendStateCreateInfo::default()
+                .logic_op_enable(false)
+                .attachments(std::slice::from_ref(&color_blend_attachment));
+
+            let set_layouts = [descriptor_set_layout];
+
+            let pipeline_layout_info = vk::PipelineLayoutCreateInfo::default()
+                .set_layouts(&set_layouts);
+
+            let pipeline_layout = device.create_pipeline_layout(&pipeline_layout_info, None)?;
+
+            let pipeline_info = vk::GraphicsPipelineCreateInfo::default()
+                .stages(&shader_stages)
+                .vertex_input_state(&vertex_input_info)
+                .input_assembly_state(&input_assembly)
+                .viewport_state(&viewport_state)
+                .rasterization_state(&rasterizer)
+                .multisample_state(&multisampling)
+                .depth_stencil_state(&depth_stencil)
+                .color_blend_state(&color_blending)
+                .layout(pipeline_layout)
+                .render_pass(ssao_render_pass)
+                .subpass(0);
+
+            let pipelines = device.create_graphics_pipelines(
+                vk::PipelineCache::null(),
+                std::slice::from_ref(&pipeline_info),
+                None,
+            ).map_err(|e| anyhow::anyhow!("Failed to create SSAO pipeline: {:?}", e.1))?;
+
+            device.destroy_shader_module(vert_shader_module, None);
+            device.destroy_shader_module(frag_shader_module, None);
+
+            Ok((pipeline_layout, pipelines[0]))
+        }
+
+        unsafe fn create_ssao_blur_pipeline(
+            device: &ash::Device,
+            extent: vk::Extent2D,
+            blur_render_pass: vk::RenderPass,
+            descriptor_set_layout: vk::DescriptorSetLayout,
+        ) -> anyhow::Result<(vk::PipelineLayout, vk::Pipeline)> {
+            let vert_shader_code = include_bytes!("../../shaders/ssao_blur.vert.spv");
+            let frag_shader_code = include_bytes!("../../shaders/ssao_blur.frag.spv");
+
+            let vert_shader_module = Self::create_shader_module(device, vert_shader_code)?;
+            let frag_shader_module = Self::create_shader_module(device, frag_shader_code)?;
+
+            let entry_point = CString::new("main")?;
+
+            let vert_stage_info = vk::PipelineShaderStageCreateInfo::default()
+                .stage(vk::ShaderStageFlags::VERTEX)
+                .module(vert_shader_module)
+                .name(&entry_point);
+
+            let frag_stage_info = vk::PipelineShaderStageCreateInfo::default()
+                .stage(vk::ShaderStageFlags::FRAGMENT)
+                .module(frag_shader_module)
+                .name(&entry_point);
+
+            let shader_stages = [vert_stage_info, frag_stage_info];
+
+            // No vertex input - fullscreen triangle
+            let vertex_input_info = vk::PipelineVertexInputStateCreateInfo::default();
+
+            let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
+                .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
+                .primitive_restart_enable(false);
+
+            let viewport = vk::Viewport {
+                x: 0.0,
+                y: 0.0,
+                width: extent.width as f32,
+                height: extent.height as f32,
+                min_depth: 0.0,
+                max_depth: 1.0,
+            };
+
+            let scissor = vk::Rect2D {
+                offset: vk::Offset2D { x: 0, y: 0 },
+                extent,
+            };
+
+            let viewport_state = vk::PipelineViewportStateCreateInfo::default()
+                .viewports(std::slice::from_ref(&viewport))
+                .scissors(std::slice::from_ref(&scissor));
+
+            let rasterizer = vk::PipelineRasterizationStateCreateInfo::default()
+                .depth_clamp_enable(false)
+                .rasterizer_discard_enable(false)
+                .polygon_mode(vk::PolygonMode::FILL)
+                .line_width(1.0)
+                .cull_mode(vk::CullModeFlags::NONE)
+                .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
+                .depth_bias_enable(false);
+
+            let multisampling = vk::PipelineMultisampleStateCreateInfo::default()
+                .sample_shading_enable(false)
+                .rasterization_samples(vk::SampleCountFlags::TYPE_1);
+
+            // No depth test for blur pass
+            let depth_stencil = vk::PipelineDepthStencilStateCreateInfo::default()
+                .depth_test_enable(false)
+                .depth_write_enable(false);
+
+            let color_blend_attachment = vk::PipelineColorBlendAttachmentState::default()
+                .color_write_mask(vk::ColorComponentFlags::R)
+                .blend_enable(false);
+
+            let color_blending = vk::PipelineColorBlendStateCreateInfo::default()
+                .logic_op_enable(false)
+                .attachments(std::slice::from_ref(&color_blend_attachment));
+
+            let set_layouts = [descriptor_set_layout];
+
+            // Add push constant for blur direction (int = 4 bytes)
+            let push_constant_range = vk::PushConstantRange::default()
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT)
+                .offset(0)
+                .size(std::mem::size_of::<i32>() as u32);
+
+            let pipeline_layout_info = vk::PipelineLayoutCreateInfo::default()
+                .set_layouts(&set_layouts)
+                .push_constant_ranges(std::slice::from_ref(&push_constant_range));
+
+            let pipeline_layout = device.create_pipeline_layout(&pipeline_layout_info, None)?;
+
+            let pipeline_info = vk::GraphicsPipelineCreateInfo::default()
+                .stages(&shader_stages)
+                .vertex_input_state(&vertex_input_info)
+                .input_assembly_state(&input_assembly)
+                .viewport_state(&viewport_state)
+                .rasterization_state(&rasterizer)
+                .multisample_state(&multisampling)
+                .depth_stencil_state(&depth_stencil)
+                .color_blend_state(&color_blending)
+                .layout(pipeline_layout)
+                .render_pass(blur_render_pass)
+                .subpass(0);
+
+            let pipelines = device.create_graphics_pipelines(
+                vk::PipelineCache::null(),
+                std::slice::from_ref(&pipeline_info),
+                None,
+            ).map_err(|e| anyhow::anyhow!("Failed to create SSAO blur pipeline: {:?}", e.1))?;
+
+            device.destroy_shader_module(vert_shader_module, None);
+            device.destroy_shader_module(frag_shader_module, None);
+
+            Ok((pipeline_layout, pipelines[0]))
         }
 
         unsafe fn create_shader_module(
@@ -2048,12 +2524,17 @@ impl VulkanRenderer {
             device: &ash::Device,
             count: usize,
         ) -> anyhow::Result<vk::DescriptorPool> {
-            let pool_size = vk::DescriptorPoolSize::default()
-            .ty(vk::DescriptorType::UNIFORM_BUFFER)
-            .descriptor_count(count as u32);
+            let pool_sizes = [
+                vk::DescriptorPoolSize::default()
+                    .ty(vk::DescriptorType::UNIFORM_BUFFER)
+                    .descriptor_count(count as u32),
+                vk::DescriptorPoolSize::default()
+                    .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .descriptor_count(count as u32),
+            ];
 
             let create_info = vk::DescriptorPoolCreateInfo::default()
-            .pool_sizes(std::slice::from_ref(&pool_size))
+            .pool_sizes(&pool_sizes)
             .max_sets(count as u32);
 
             Ok(device.create_descriptor_pool(&create_info, None)?)
@@ -2084,31 +2565,46 @@ impl VulkanRenderer {
             pool: vk::DescriptorPool,
             layout: vk::DescriptorSetLayout,
             buffers: &[vk::Buffer],
+            ssao_image_view: vk::ImageView,
+            ssao_sampler: vk::Sampler,
             count: usize,
         ) -> anyhow::Result<Vec<vk::DescriptorSet>> {
             let layouts = vec![layout; count];
             let alloc_info = vk::DescriptorSetAllocateInfo::default()
             .descriptor_pool(pool)
             .set_layouts(&layouts);
-            
+
             let descriptor_sets = device.allocate_descriptor_sets(&alloc_info)?;
-            
+
             for (i, &descriptor_set) in descriptor_sets.iter().enumerate() {
                 let buffer_info = vk::DescriptorBufferInfo::default()
                 .buffer(buffers[i])
                 .offset(0)
                 .range(std::mem::size_of::<UniformBufferObject>() as vk::DeviceSize);
-                
-                let descriptor_write = vk::WriteDescriptorSet::default()
-                .dst_set(descriptor_set)
-                .dst_binding(0)
-                .dst_array_element(0)
-                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                .buffer_info(std::slice::from_ref(&buffer_info));
-                
-                device.update_descriptor_sets(std::slice::from_ref(&descriptor_write), &[]);
+
+                let image_info = vk::DescriptorImageInfo::default()
+                    .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                    .image_view(ssao_image_view)
+                    .sampler(ssao_sampler);
+
+                let descriptor_writes = [
+                    vk::WriteDescriptorSet::default()
+                        .dst_set(descriptor_set)
+                        .dst_binding(0)
+                        .dst_array_element(0)
+                        .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                        .buffer_info(std::slice::from_ref(&buffer_info)),
+                    vk::WriteDescriptorSet::default()
+                        .dst_set(descriptor_set)
+                        .dst_binding(1)
+                        .dst_array_element(0)
+                        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                        .image_info(std::slice::from_ref(&image_info)),
+                ];
+
+                device.update_descriptor_sets(&descriptor_writes, &[]);
             }
-            
+
             Ok(descriptor_sets)
         }
 
@@ -2305,6 +2801,272 @@ impl VulkanRenderer {
             Ok(device.create_sampler(&sampler_info, None)?)
         }
 
+        unsafe fn create_ssao_image(
+            instance: &ash::Instance,
+            physical_device: vk::PhysicalDevice,
+            device: &ash::Device,
+            extent: vk::Extent2D,
+        ) -> anyhow::Result<(vk::Image, vk::DeviceMemory, vk::ImageView)> {
+            let format = vk::Format::R8_UNORM; // Single channel for AO
+
+            let image_info = vk::ImageCreateInfo::default()
+                .image_type(vk::ImageType::TYPE_2D)
+                .extent(vk::Extent3D {
+                    width: extent.width,
+                    height: extent.height,
+                    depth: 1,
+                })
+                .mip_levels(1)
+                .array_layers(1)
+                .format(format)
+                .tiling(vk::ImageTiling::OPTIMAL)
+                .initial_layout(vk::ImageLayout::UNDEFINED)
+                .usage(vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED)
+                .sharing_mode(vk::SharingMode::EXCLUSIVE)
+                .samples(vk::SampleCountFlags::TYPE_1);
+
+            let image = device.create_image(&image_info, None)?;
+            let mem_requirements = device.get_image_memory_requirements(image);
+
+            let alloc_info = vk::MemoryAllocateInfo::default()
+                .allocation_size(mem_requirements.size)
+                .memory_type_index(Self::find_memory_type(
+                    instance,
+                    physical_device,
+                    mem_requirements.memory_type_bits,
+                    vk::MemoryPropertyFlags::DEVICE_LOCAL,
+                )?);
+
+            let image_memory = device.allocate_memory(&alloc_info, None)?;
+            device.bind_image_memory(image, image_memory, 0)?;
+
+            let view_info = vk::ImageViewCreateInfo::default()
+                .image(image)
+                .view_type(vk::ImageViewType::TYPE_2D)
+                .format(format)
+                .subresource_range(vk::ImageSubresourceRange {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    base_mip_level: 0,
+                    level_count: 1,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                });
+
+            let image_view = device.create_image_view(&view_info, None)?;
+
+            Ok((image, image_memory, image_view))
+        }
+
+        unsafe fn create_ssao_sampler(device: &ash::Device) -> anyhow::Result<vk::Sampler> {
+            let sampler_info = vk::SamplerCreateInfo::default()
+                .mag_filter(vk::Filter::LINEAR)
+                .min_filter(vk::Filter::LINEAR)
+                .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+                .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+                .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+                .anisotropy_enable(false)
+                .max_anisotropy(1.0)
+                .border_color(vk::BorderColor::FLOAT_OPAQUE_WHITE)
+                .unnormalized_coordinates(false)
+                .compare_enable(false)
+                .compare_op(vk::CompareOp::ALWAYS)
+                .mipmap_mode(vk::SamplerMipmapMode::LINEAR)
+                .mip_lod_bias(0.0)
+                .min_lod(0.0)
+                .max_lod(0.0);
+
+            Ok(device.create_sampler(&sampler_info, None)?)
+        }
+
+        unsafe fn create_ssao_render_pass(device: &ash::Device) -> anyhow::Result<vk::RenderPass> {
+            // Single color attachment for SSAO output (R8_UNORM)
+            let color_attachment = vk::AttachmentDescription::default()
+                .format(vk::Format::R8_UNORM)
+                .samples(vk::SampleCountFlags::TYPE_1)
+                .load_op(vk::AttachmentLoadOp::CLEAR)
+                .store_op(vk::AttachmentStoreOp::STORE)
+                .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
+                .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
+                .initial_layout(vk::ImageLayout::UNDEFINED)
+                .final_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
+
+            let color_attachment_ref = vk::AttachmentReference::default()
+                .attachment(0)
+                .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
+
+            let subpass = vk::SubpassDescription::default()
+                .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
+                .color_attachments(std::slice::from_ref(&color_attachment_ref));
+
+            let dependency = vk::SubpassDependency::default()
+                .src_subpass(vk::SUBPASS_EXTERNAL)
+                .dst_subpass(0)
+                .src_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
+                .src_access_mask(vk::AccessFlags::empty())
+                .dst_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
+                .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE);
+
+            let create_info = vk::RenderPassCreateInfo::default()
+                .attachments(std::slice::from_ref(&color_attachment))
+                .subpasses(std::slice::from_ref(&subpass))
+                .dependencies(std::slice::from_ref(&dependency));
+
+            Ok(device.create_render_pass(&create_info, None)?)
+        }
+
+        unsafe fn create_ssao_framebuffer(
+            device: &ash::Device,
+            render_pass: vk::RenderPass,
+            image_view: vk::ImageView,
+            extent: vk::Extent2D,
+        ) -> anyhow::Result<vk::Framebuffer> {
+            let attachments = [image_view];
+
+            let framebuffer_info = vk::FramebufferCreateInfo::default()
+                .render_pass(render_pass)
+                .attachments(&attachments)
+                .width(extent.width)
+                .height(extent.height)
+                .layers(1);
+
+            Ok(device.create_framebuffer(&framebuffer_info, None)?)
+        }
+
+        unsafe fn create_ssao_descriptor_pool(
+            device: &ash::Device,
+            count: usize,
+        ) -> anyhow::Result<vk::DescriptorPool> {
+            let pool_sizes = [
+                vk::DescriptorPoolSize::default()
+                    .ty(vk::DescriptorType::UNIFORM_BUFFER)
+                    .descriptor_count(count as u32),
+                vk::DescriptorPoolSize::default()
+                    .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .descriptor_count(count as u32),
+            ];
+
+            let create_info = vk::DescriptorPoolCreateInfo::default()
+                .pool_sizes(&pool_sizes)
+                .max_sets(count as u32);
+
+            Ok(device.create_descriptor_pool(&create_info, None)?)
+        }
+
+        unsafe fn create_ssao_blur_descriptor_pool(
+            device: &ash::Device,
+            count: usize,
+        ) -> anyhow::Result<vk::DescriptorPool> {
+            // Need 2 image samplers per set: SSAO input + depth texture
+            let pool_size = vk::DescriptorPoolSize::default()
+                .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count((count * 2) as u32);
+
+            let create_info = vk::DescriptorPoolCreateInfo::default()
+                .pool_sizes(std::slice::from_ref(&pool_size))
+                .max_sets(count as u32);
+
+            Ok(device.create_descriptor_pool(&create_info, None)?)
+        }
+
+        unsafe fn create_ssao_descriptor_sets(
+            device: &ash::Device,
+            pool: vk::DescriptorPool,
+            layout: vk::DescriptorSetLayout,
+            uniform_buffers: &[vk::Buffer],
+            depth_image_view: vk::ImageView,
+            depth_sampler: vk::Sampler,
+            count: usize,
+        ) -> anyhow::Result<Vec<vk::DescriptorSet>> {
+            let layouts = vec![layout; count];
+            let alloc_info = vk::DescriptorSetAllocateInfo::default()
+                .descriptor_pool(pool)
+                .set_layouts(&layouts);
+
+            let descriptor_sets = device.allocate_descriptor_sets(&alloc_info)?;
+
+            for i in 0..count {
+                let buffer_info = vk::DescriptorBufferInfo::default()
+                    .buffer(uniform_buffers[i])
+                    .offset(0)
+                    .range(std::mem::size_of::<UniformBufferObject>() as vk::DeviceSize);
+
+                let image_info = vk::DescriptorImageInfo::default()
+                    .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                    .image_view(depth_image_view)
+                    .sampler(depth_sampler);
+
+                let descriptor_writes = [
+                    vk::WriteDescriptorSet::default()
+                        .dst_set(descriptor_sets[i])
+                        .dst_binding(0)
+                        .dst_array_element(0)
+                        .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                        .buffer_info(std::slice::from_ref(&buffer_info)),
+                    vk::WriteDescriptorSet::default()
+                        .dst_set(descriptor_sets[i])
+                        .dst_binding(1)
+                        .dst_array_element(0)
+                        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                        .image_info(std::slice::from_ref(&image_info)),
+                ];
+
+                device.update_descriptor_sets(&descriptor_writes, &[]);
+            }
+
+            Ok(descriptor_sets)
+        }
+
+        unsafe fn create_ssao_blur_descriptor_sets(
+            device: &ash::Device,
+            pool: vk::DescriptorPool,
+            layout: vk::DescriptorSetLayout,
+            ssao_image_view: vk::ImageView,
+            ssao_sampler: vk::Sampler,
+            depth_image_view: vk::ImageView,
+            depth_sampler: vk::Sampler,
+            count: usize,
+        ) -> anyhow::Result<Vec<vk::DescriptorSet>> {
+            let layouts = vec![layout; count];
+            let alloc_info = vk::DescriptorSetAllocateInfo::default()
+                .descriptor_pool(pool)
+                .set_layouts(&layouts);
+
+            let descriptor_sets = device.allocate_descriptor_sets(&alloc_info)?;
+
+            for i in 0..count {
+                // Binding 0: SSAO input
+                let ssao_image_info = vk::DescriptorImageInfo::default()
+                    .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                    .image_view(ssao_image_view)
+                    .sampler(ssao_sampler);
+
+                // Binding 1: Depth texture for edge detection
+                let depth_image_info = vk::DescriptorImageInfo::default()
+                    .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                    .image_view(depth_image_view)
+                    .sampler(depth_sampler);
+
+                let descriptor_writes = [
+                    vk::WriteDescriptorSet::default()
+                        .dst_set(descriptor_sets[i])
+                        .dst_binding(0)
+                        .dst_array_element(0)
+                        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                        .image_info(std::slice::from_ref(&ssao_image_info)),
+                    vk::WriteDescriptorSet::default()
+                        .dst_set(descriptor_sets[i])
+                        .dst_binding(1)
+                        .dst_array_element(0)
+                        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                        .image_info(std::slice::from_ref(&depth_image_info)),
+                ];
+
+                device.update_descriptor_sets(&descriptor_writes, &[]);
+            }
+
+            Ok(descriptor_sets)
+        }
+
         unsafe fn update_uniform_buffer(&mut self, image_index: usize, game: &crate::game::Game) -> anyhow::Result<()> {
             let view = game.get_view_matrix();
 
@@ -2332,10 +3094,21 @@ impl VulkanRenderer {
                 _padding: 0.0,
                 dir_light_direction,
                 _padding2: 0.0,
-                dir_light_color: self.directional_light.color,
-                dir_light_intensity: self.directional_light.intensity,
+                dir_light_color: game.directional_light.color,
+                dir_light_intensity: game.directional_light.intensity,
+                dir_light_shadow_color: game.directional_light.shadow_color,
+                star_density: game.skybox_config.star_density,
+                star_brightness: game.skybox_config.star_brightness,
+                _pad0: 0.0,
+                _pad1: 0.0,
+                _pad2: 0.0,
+                nebula_primary_color: game.skybox_config.nebula_primary_color,
+                nebula_intensity: game.skybox_config.nebula_intensity,
+                nebula_secondary_color: game.skybox_config.nebula_secondary_color,
+                background_brightness: game.skybox_config.background_brightness,
                 point_light_count: self.point_lights.len().min(MAX_POINT_LIGHTS) as u32,
-                _padding3: [0; 3],
+                ssao_enabled: if game.ssao_config.enabled { 1 } else { 0 },
+                _padding3: [0; 2],
             };
             
             let data = self.device.map_memory(
@@ -2444,6 +3217,31 @@ impl VulkanRenderer {
             Ok(())
         }
 
+        unsafe fn update_ssao_uniform_buffer(&mut self, image_index: usize, game: &crate::game::Game) -> anyhow::Result<()> {
+            let aspect = self.swapchain_extent.width as f32 / self.swapchain_extent.height as f32;
+            let proj = game.camera.projection_matrix(aspect);
+
+            // Create SSAO-specific UBO
+            let ubo = SSAOUniformBufferObject {
+                proj,
+                ssao_radius: game.ssao_config.radius,
+                ssao_bias: game.ssao_config.bias,
+                ssao_power: game.ssao_config.power,
+                ssao_kernel_size: game.ssao_config.kernel_size,
+            };
+
+            let data = self.device.map_memory(
+                self.ssao_uniform_buffers_memory[image_index],
+                0,
+                std::mem::size_of::<SSAOUniformBufferObject>() as vk::DeviceSize,
+                vk::MemoryMapFlags::empty(),
+            )?;
+            std::ptr::copy_nonoverlapping(&ubo, data as *mut SSAOUniformBufferObject, 1);
+            self.device.unmap_memory(self.ssao_uniform_buffers_memory[image_index]);
+
+            Ok(())
+        }
+
         /// Update gizmo vertex and index buffers with the current mesh data
         unsafe fn update_gizmo_buffers(&mut self, mesh: &Mesh) -> anyhow::Result<()> {
             // Update vertex buffer - map the full buffer size, not just the mesh size
@@ -2537,6 +3335,7 @@ impl VulkanRenderer {
                 self.update_skybox_uniform_buffer(self.current_frame, game)?;
                 self.update_nebula_uniform_buffer(self.current_frame, game)?;
                 self.update_gizmo_uniform_buffer(self.current_frame, game)?;
+                self.update_ssao_uniform_buffer(self.current_frame, game)?;
                 
                 // Prepare ImGui frame
                 self.imgui_platform.prepare_frame(self.imgui_context.io_mut(), &self.window)?;
@@ -2696,7 +3495,8 @@ impl VulkanRenderer {
                         albedo: game.material.albedo,
                         metallic: game.material.metallic,
                         roughness: game.material.roughness,
-                        ao_intensity: game.material.ao_intensity,
+                        ambient_strength: game.material.ambient_strength,
+                        gi_strength: game.material.gi_strength,
                     };
                     let push_constants = bytemuck::bytes_of(&push_data);
                     self.device.cmd_push_constants(
@@ -2745,7 +3545,8 @@ impl VulkanRenderer {
                             albedo: game.material.albedo,
                             metallic: game.material.metallic,
                             roughness: game.material.roughness,
-                            ao_intensity: game.material.ao_intensity,
+                            ambient_strength: game.material.ambient_strength,
+                            gi_strength: game.material.gi_strength,
                         };
                         let push_constants = bytemuck::bytes_of(&push_data);
                         self.device.cmd_push_constants(
@@ -2953,10 +3754,160 @@ impl VulkanRenderer {
                 self.graphics_queue,
                 draw_data,
             )?;
-            
+
             self.device.cmd_end_render_pass(command_buffer);
+
+            // SSAO Pass - only if enabled
+            if game.ssao_config.enabled {
+                // SSAO Pass - compute ambient occlusion from depth buffer
+                let ssao_clear_values = [vk::ClearValue {
+                    color: vk::ClearColorValue {
+                        float32: [1.0, 0.0, 0.0, 0.0], // Clear to 1.0 (no occlusion)
+                    },
+                }];
+
+                let ssao_render_pass_info = vk::RenderPassBeginInfo::default()
+                    .render_pass(self.ssao_render_pass)
+                    .framebuffer(self.ssao_framebuffer)
+                    .render_area(vk::Rect2D {
+                        offset: vk::Offset2D { x: 0, y: 0 },
+                        extent: self.swapchain_extent,
+                    })
+                    .clear_values(&ssao_clear_values);
+
+                self.device.cmd_begin_render_pass(
+                    command_buffer,
+                    &ssao_render_pass_info,
+                    vk::SubpassContents::INLINE,
+                );
+
+                self.device.cmd_bind_pipeline(
+                    command_buffer,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    self.ssao_pipeline,
+                );
+
+                self.device.cmd_bind_descriptor_sets(
+                    command_buffer,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    self.ssao_pipeline_layout,
+                    0,
+                    &[self.ssao_descriptor_sets[self.current_frame]],
+                    &[],
+                );
+
+                // Draw fullscreen triangle (no vertex buffer needed)
+                self.device.cmd_draw(command_buffer, 3, 1, 0, 0);
+
+                self.device.cmd_end_render_pass(command_buffer);
+
+                // SSAO Blur Pass 1: Horizontal blur (SSAO -> intermediate)
+                let ssao_blur_clear_values = [vk::ClearValue {
+                    color: vk::ClearColorValue {
+                        float32: [1.0, 0.0, 0.0, 0.0],
+                    },
+                }];
+
+                let ssao_blur_horizontal_render_pass_info = vk::RenderPassBeginInfo::default()
+                    .render_pass(self.ssao_blur_horizontal_render_pass)
+                    .framebuffer(self.ssao_blur_horizontal_framebuffer)
+                    .render_area(vk::Rect2D {
+                        offset: vk::Offset2D { x: 0, y: 0 },
+                        extent: self.swapchain_extent,
+                    })
+                    .clear_values(&ssao_blur_clear_values);
+
+                self.device.cmd_begin_render_pass(
+                    command_buffer,
+                    &ssao_blur_horizontal_render_pass_info,
+                    vk::SubpassContents::INLINE,
+                );
+
+                self.device.cmd_bind_pipeline(
+                    command_buffer,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    self.ssao_blur_pipeline,
+                );
+
+                self.device.cmd_bind_descriptor_sets(
+                    command_buffer,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    self.ssao_blur_pipeline_layout,
+                    0,
+                    &[self.ssao_blur_horizontal_descriptor_sets[self.current_frame]],
+                    &[],
+                );
+
+                // Push constant: direction = 0 (horizontal)
+                let horizontal_direction: i32 = 0;
+                self.device.cmd_push_constants(
+                    command_buffer,
+                    self.ssao_blur_pipeline_layout,
+                    vk::ShaderStageFlags::FRAGMENT,
+                    0,
+                    std::slice::from_raw_parts(
+                        &horizontal_direction as *const i32 as *const u8,
+                        std::mem::size_of::<i32>(),
+                    ),
+                );
+
+                // Draw fullscreen triangle
+                self.device.cmd_draw(command_buffer, 3, 1, 0, 0);
+
+                self.device.cmd_end_render_pass(command_buffer);
+
+                // SSAO Blur Pass 2: Vertical blur (intermediate -> final)
+                let ssao_blur_vertical_render_pass_info = vk::RenderPassBeginInfo::default()
+                    .render_pass(self.ssao_blur_render_pass)
+                    .framebuffer(self.ssao_blur_framebuffer)
+                    .render_area(vk::Rect2D {
+                        offset: vk::Offset2D { x: 0, y: 0 },
+                        extent: self.swapchain_extent,
+                    })
+                    .clear_values(&ssao_blur_clear_values);
+
+                self.device.cmd_begin_render_pass(
+                    command_buffer,
+                    &ssao_blur_vertical_render_pass_info,
+                    vk::SubpassContents::INLINE,
+                );
+
+                self.device.cmd_bind_pipeline(
+                    command_buffer,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    self.ssao_blur_pipeline,
+                );
+
+                self.device.cmd_bind_descriptor_sets(
+                    command_buffer,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    self.ssao_blur_pipeline_layout,
+                    0,
+                    &[self.ssao_blur_descriptor_sets[self.current_frame]],
+                    &[],
+                );
+
+                // Push constant: direction = 1 (vertical)
+                let vertical_direction: i32 = 1;
+                self.device.cmd_push_constants(
+                    command_buffer,
+                    self.ssao_blur_pipeline_layout,
+                    vk::ShaderStageFlags::FRAGMENT,
+                    0,
+                    std::slice::from_raw_parts(
+                        &vertical_direction as *const i32 as *const u8,
+                        std::mem::size_of::<i32>(),
+                    ),
+                );
+
+                // Draw fullscreen triangle
+                self.device.cmd_draw(command_buffer, 3, 1, 0, 0);
+
+                self.device.cmd_end_render_pass(command_buffer);
+            }
+
             self.device.end_command_buffer(command_buffer)?;
-            
+
             Ok(())
         }
         
@@ -3205,18 +4156,58 @@ impl VulkanRenderer {
                 // Cleanup depth sampler
                 self.device.destroy_sampler(self.depth_sampler, None);
 
+                // Cleanup SSAO resources
+                self.device.destroy_descriptor_pool(self.ssao_blur_horizontal_descriptor_pool, None);
+                self.device.destroy_descriptor_pool(self.ssao_blur_descriptor_pool, None);
+                self.device.destroy_descriptor_pool(self.ssao_descriptor_pool, None);
+
+                self.device.destroy_framebuffer(self.ssao_blur_horizontal_framebuffer, None);
+                self.device.destroy_framebuffer(self.ssao_blur_framebuffer, None);
+                self.device.destroy_framebuffer(self.ssao_framebuffer, None);
+
+                self.device.destroy_render_pass(self.ssao_blur_horizontal_render_pass, None);
+                self.device.destroy_render_pass(self.ssao_blur_render_pass, None);
+                self.device.destroy_render_pass(self.ssao_render_pass, None);
+
+                self.device.destroy_pipeline(self.ssao_blur_pipeline, None);
+                self.device.destroy_pipeline(self.ssao_pipeline, None);
+                self.device.destroy_pipeline_layout(self.ssao_blur_pipeline_layout, None);
+                self.device.destroy_pipeline_layout(self.ssao_pipeline_layout, None);
+
+                self.device.destroy_descriptor_set_layout(self.ssao_blur_descriptor_set_layout, None);
+                self.device.destroy_descriptor_set_layout(self.ssao_descriptor_set_layout, None);
+
+                for i in 0..MAX_FRAMES_IN_FLIGHT {
+                    self.device.destroy_buffer(self.ssao_uniform_buffers[i], None);
+                    self.device.free_memory(self.ssao_uniform_buffers_memory[i], None);
+                }
+
+                self.device.destroy_sampler(self.ssao_sampler, None);
+
+                self.device.destroy_image_view(self.ssao_blur_intermediate_image_view, None);
+                self.device.destroy_image(self.ssao_blur_intermediate_image, None);
+                self.device.free_memory(self.ssao_blur_intermediate_image_memory, None);
+
+                self.device.destroy_image_view(self.ssao_blur_image_view, None);
+                self.device.destroy_image(self.ssao_blur_image, None);
+                self.device.free_memory(self.ssao_blur_image_memory, None);
+
+                self.device.destroy_image_view(self.ssao_image_view, None);
+                self.device.destroy_image(self.ssao_image, None);
+                self.device.free_memory(self.ssao_image_memory, None);
+
                 for i in 0..MAX_FRAMES_IN_FLIGHT {
                     self.device.destroy_semaphore(self.image_available_semaphores[i], None);
                     self.device.destroy_semaphore(self.render_finished_semaphores[i], None);
                     self.device.destroy_fence(self.in_flight_fences[i], None);
                 }
-                
+
                 self.device.destroy_command_pool(self.command_pool, None);
                 self.device.destroy_pipeline(self.graphics_pipeline, None);
                 self.device.destroy_pipeline(self.wireframe_pipeline, None);
                 self.device.destroy_pipeline_layout(self.pipeline_layout, None);
                 self.device.destroy_render_pass(self.render_pass, None);
-                
+
                 self.device.destroy_device(None);
                 
                 if let Some((debug_utils, messenger)) = self.debug_utils.take() {

@@ -3,7 +3,7 @@ mod gui_builder;
 pub use gui_builder::{GuiPanelBuilder, GuiContentBuilder, SkyboxFxBuilder};
 
 use imgui::{Context, Ui};
-use crate::game::{Game, SkyboxConfig};
+use crate::game::{Game, SkyboxConfig, SSAOConfig};
 use crate::nebula::NebulaConfig;
 use crate::config::EngineConfig;
 use crate::scene::{SceneData, ObjectType};
@@ -151,6 +151,102 @@ impl UiManager {
         }
     }
 
+    /// Build directional light settings panel
+    pub fn build_directional_light_settings(ui: &Ui, game: &mut Game) {
+        GuiPanelBuilder::new(ui, "Directional Light Settings")
+            .size(350.0, 300.0)
+            .position(270.0, 10.0)
+            .build(|content| {
+                content.text("Main directional light source");
+                content.separator();
+
+                let light = &mut game.directional_light;
+
+                content.header("Light Color & Intensity");
+
+                // Color picker for light color
+                let mut color = [light.color.x, light.color.y, light.color.z];
+                content.text("Light Color");
+                if ui.color_edit3("##light_color", &mut color) {
+                    light.color = glam::Vec3::new(color[0], color[1], color[2]);
+                }
+
+                // Intensity slider
+                content.text("Brightness");
+                ui.slider("##light_intensity", 0.0, 3.0, &mut light.intensity);
+
+                content.separator();
+                content.header("Shadow/Ambient Color");
+
+                // Shadow color picker
+                let mut shadow_color = [light.shadow_color.x, light.shadow_color.y, light.shadow_color.z];
+                content.text("Shadow Color");
+                if ui.color_edit3("##shadow_color", &mut shadow_color) {
+                    light.shadow_color = glam::Vec3::new(shadow_color[0], shadow_color[1], shadow_color[2]);
+                }
+
+                content.separator();
+                content.header("Direction (via Transform)");
+                content.text("Rotate the light object to");
+                content.text("change light direction");
+            });
+    }
+
+    pub fn build_ssao_settings(ui: &Ui, game: &mut Game) {
+        // Store original config to detect changes
+        let orig_config = game.ssao_config.clone();
+
+        GuiPanelBuilder::new(ui, "SSAO Settings")
+            .size(350.0, 300.0)
+            .position(270.0, 10.0)
+            .build(|content| {
+                content.text("Screen-Space Ambient Occlusion");
+                content.separator();
+
+                let ssao = &mut game.ssao_config;
+
+                // Enable/Disable toggle
+                content.checkbox("Enable SSAO", &mut ssao.enabled);
+                content.separator();
+
+                content.header("SSAO Parameters");
+
+                // Radius slider
+                content.text("Radius");
+                ui.slider("##ssao_radius", 0.1, 3.0, &mut ssao.radius);
+
+                // Bias slider
+                content.text("Bias (prevents self-occlusion)");
+                ui.slider("##ssao_bias", 0.001, 0.5, &mut ssao.bias);
+
+                // Power slider
+                content.text("Power (contrast)");
+                ui.slider("##ssao_power", 1.0, 4.0, &mut ssao.power);
+
+                // Kernel size slider (must be integer)
+                content.text("Kernel Size (sample count)");
+                let mut kernel_f32 = ssao.kernel_size as f32;
+                if ui.slider("##ssao_kernel", 8.0, 128.0, &mut kernel_f32) {
+                    ssao.kernel_size = kernel_f32 as u32;
+                }
+
+                content.separator();
+                content.text("Quality vs Performance:");
+                content.text("Lower samples = faster");
+                content.text("Higher samples = smoother");
+            });
+
+        // Detect changes
+        if orig_config.enabled != game.ssao_config.enabled
+            || orig_config.radius != game.ssao_config.radius
+            || orig_config.bias != game.ssao_config.bias
+            || orig_config.power != game.ssao_config.power
+            || orig_config.kernel_size != game.ssao_config.kernel_size
+        {
+            game.mark_config_dirty();
+        }
+    }
+
     /// Build the scene hierarchy UI
     pub fn build_scene_hierarchy(ui: &Ui, game: &mut Game) {
         let mut save_scene_clicked = false;
@@ -183,14 +279,16 @@ impl UiManager {
                     .filter(|(_, _, obj_type)| matches!(obj_type,
                         crate::scene::ObjectType::Skybox |
                         crate::scene::ObjectType::Nebula |
-                        crate::scene::ObjectType::DirectionalLight))
+                        crate::scene::ObjectType::DirectionalLight |
+                        crate::scene::ObjectType::SSAO))
                     .collect();
 
                 let objects: Vec<_> = all_objects.iter()
                     .filter(|(_, _, obj_type)| !matches!(obj_type,
                         crate::scene::ObjectType::Skybox |
                         crate::scene::ObjectType::Nebula |
-                        crate::scene::ObjectType::DirectionalLight))
+                        crate::scene::ObjectType::DirectionalLight |
+                        crate::scene::ObjectType::SSAO))
                     .collect();
 
                 // Render Singletons section
@@ -253,7 +351,10 @@ impl UiManager {
                 if let Some(id) = selected_id {
                     // Check if the selected object is duplicatable
                     let can_duplicate = game.scene.get_object(id)
-                        .map(|obj| !matches!(obj.object_type, crate::scene::ObjectType::Skybox | crate::scene::ObjectType::Nebula))
+                        .map(|obj| !matches!(obj.object_type,
+                            crate::scene::ObjectType::Skybox |
+                            crate::scene::ObjectType::Nebula |
+                            crate::scene::ObjectType::SSAO))
                         .unwrap_or(false);
 
                     if can_duplicate {
@@ -441,6 +542,10 @@ impl UiManager {
                             content.text("Select this object to see");
                             content.text("Skybox Settings panel");
                         }
+                        ObjectType::SSAO => {
+                            content.text("Select this object to see");
+                            content.text("SSAO Settings panel");
+                        }
                         _ => {}
                     }
                 } else {
@@ -522,11 +627,17 @@ impl UiManager {
                 ui.same_line();
                 ui.text_disabled("(0=smooth, 1=rough)");
 
-                // AO intensity slider
-                ui.text("AO Intensity");
-                ui.slider("##ao_intensity", 0.0, 2.0, &mut game.material.ao_intensity);
+                // Ambient lighting slider
+                ui.text("Ambient Strength");
+                ui.slider("##ambient_strength", 0.0, 2.0, &mut game.material.ambient_strength);
                 ui.same_line();
-                ui.text_disabled("(ambient occlusion)");
+                ui.text_disabled("(constant ambient light)");
+
+                // GI strength slider
+                ui.text("GI Strength");
+                ui.slider("##gi_strength", 0.0, 1.0, &mut game.material.gi_strength);
+                ui.same_line();
+                ui.text_disabled("(environmental lighting)");
 
                 content.separator();
 
@@ -719,6 +830,8 @@ impl UiManager {
         match selected_type {
             Some(ObjectType::Skybox) => Self::build_skybox_settings(&ui, game),
             Some(ObjectType::Nebula) => Self::build_nebula_settings(&ui, game),
+            Some(ObjectType::DirectionalLight) => Self::build_directional_light_settings(&ui, game),
+            Some(ObjectType::SSAO) => Self::build_ssao_settings(&ui, game),
             Some(ObjectType::Cube) | Some(ObjectType::Mesh(_)) => {
                 // Mesh/Cube objects can use materials but have no extra settings panel
                 // Material editor is accessed via Materials section in hierarchy
@@ -760,6 +873,34 @@ impl UiManager {
         }
     }
 
+    fn save_ssao_config(game: &mut Game) {
+        let mut engine_config = EngineConfig::load_or_default(CONFIG_PATH);
+        engine_config.ssao = (&game.ssao_config).into();
+        if let Err(e) = engine_config.save(CONFIG_PATH) {
+            eprintln!("Failed to save SSAO config: {}", e);
+            game.add_notification("Failed to save SSAO config".to_string(), 3.0);
+        } else {
+            println!("SSAO config saved to {}", CONFIG_PATH);
+            game.config_dirty = false;
+            game.add_notification("SSAO config saved".to_string(), 2.0);
+        }
+    }
+
+    fn load_ssao_config(game: &mut Game) {
+        match EngineConfig::load(CONFIG_PATH) {
+            Ok(config) => {
+                game.ssao_config = config.ssao.into();
+                println!("SSAO config loaded from {}", CONFIG_PATH);
+                game.config_dirty = false;
+                game.add_notification("SSAO config loaded".to_string(), 2.0);
+            }
+            Err(e) => {
+                eprintln!("Failed to load SSAO config: {}", e);
+                game.add_notification("Failed to load SSAO config".to_string(), 3.0);
+            }
+        }
+    }
+
     fn save_nebula_config(game: &mut Game) {
         let mut engine_config = EngineConfig::load_or_default(CONFIG_PATH);
         engine_config.nebula = (&game.nebula_config).into();
@@ -795,6 +936,7 @@ impl UiManager {
                 game.skybox_config = config.skybox.into();
                 game.nebula_config = config.nebula.into();
                 game.camera = config.camera.into();
+                game.ssao_config = config.ssao.into();
                 println!("All configs loaded from {}", CONFIG_PATH);
             }
             Err(e) => {
@@ -813,6 +955,7 @@ impl UiManager {
             nebula: (&game.nebula_config).into(),
             skybox: (&game.skybox_config).into(),
             camera: (&game.camera).into(),
+            ssao: (&game.ssao_config).into(),
         };
 
         if let Err(e) = engine_config.save(CONFIG_PATH) {
@@ -822,32 +965,75 @@ impl UiManager {
         }
     }
 
-    /// Save scene to file
+    /// Save EVERYTHING (scene + all configs) to files
     fn save_scene(game: &mut Game) {
+        // Save scene (object transforms and hierarchy)
         let scene_data = SceneData::from_scene_graph(&game.scene);
-        if let Err(e) = scene_data.save(SCENE_PATH) {
-            eprintln!("Failed to save scene: {}", e);
-            game.add_notification("Failed to save scene".to_string(), 3.0);
+        let scene_result = scene_data.save(SCENE_PATH);
+
+        // Save all configs (skybox, nebula, camera, SSAO)
+        let engine_config = EngineConfig {
+            nebula: (&game.nebula_config).into(),
+            skybox: (&game.skybox_config).into(),
+            camera: (&game.camera).into(),
+            ssao: (&game.ssao_config).into(),
+        };
+        let config_result = engine_config.save(CONFIG_PATH);
+
+        // Report results
+        if scene_result.is_err() || config_result.is_err() {
+            if let Err(e) = scene_result {
+                eprintln!("Failed to save scene: {}", e);
+            }
+            if let Err(e) = config_result {
+                eprintln!("Failed to save configs: {}", e);
+            }
+            game.add_notification("Failed to save".to_string(), 3.0);
         } else {
-            println!("Scene saved to {}", SCENE_PATH);
+            println!("Scene and configs saved");
             game.scene_dirty = false;
-            game.add_notification("Scene saved".to_string(), 2.0);
+            game.config_dirty = false;
+            game.add_notification("Everything saved!".to_string(), 2.0);
         }
     }
 
-    /// Load scene from file
+    /// Load EVERYTHING (scene + all configs) from files
     fn load_scene(game: &mut Game) {
+        let mut success = true;
+
+        // Load scene
         match SceneData::load(SCENE_PATH) {
             Ok(scene_data) => {
                 game.scene = scene_data.to_scene_graph();
                 println!("Scene loaded from {}", SCENE_PATH);
-                game.scene_dirty = false;
-                game.add_notification("Scene loaded".to_string(), 2.0);
             }
             Err(e) => {
                 eprintln!("Failed to load scene: {}", e);
-                game.add_notification("Failed to load scene".to_string(), 3.0);
+                success = false;
             }
+        }
+
+        // Load all configs
+        match EngineConfig::load(CONFIG_PATH) {
+            Ok(config) => {
+                game.skybox_config = config.skybox.into();
+                game.nebula_config = config.nebula.into();
+                game.camera = config.camera.into();
+                game.ssao_config = config.ssao.into();
+                println!("All configs loaded from {}", CONFIG_PATH);
+            }
+            Err(e) => {
+                eprintln!("Failed to load configs: {}", e);
+                success = false;
+            }
+        }
+
+        if success {
+            game.scene_dirty = false;
+            game.config_dirty = false;
+            game.add_notification("Everything loaded!".to_string(), 2.0);
+        } else {
+            game.add_notification("Failed to load".to_string(), 3.0);
         }
     }
 
@@ -855,6 +1041,12 @@ impl UiManager {
     pub fn load_scene_on_startup(game: &mut Game) {
         let scene_data = SceneData::load_and_merge_with_default(SCENE_PATH);
         game.scene = scene_data.to_scene_graph();
+
+        // Ensure SSAO singleton always exists (add if missing)
+        if game.scene.find_by_type(crate::scene::ObjectType::SSAO).is_none() {
+            game.scene.add_object("SSAO".to_string(), crate::scene::ObjectType::SSAO);
+        }
+
         println!("Scene initialized from {}", SCENE_PATH);
     }
 }

@@ -3,6 +3,7 @@ use crate::nebula::NebulaConfig;
 use crate::core::Camera;
 use crate::scene::{SceneGraph, ObjectType, ObjectId};
 use crate::gizmo::{GizmoState, ObjectPicker};
+use serde::{Serialize, Deserialize};
 
 /// Skybox configuration
 #[derive(Clone)]
@@ -43,6 +44,31 @@ impl From<&SkyboxConfig> for crate::config::SkyboxConfigData {
             nebula_secondary_color: config.nebula_secondary_color,
             nebula_intensity: config.nebula_intensity,
             background_brightness: config.background_brightness,
+        }
+    }
+}
+
+// SSAO config conversions
+impl From<crate::config::SSAOConfigData> for SSAOConfig {
+    fn from(data: crate::config::SSAOConfigData) -> Self {
+        Self {
+            enabled: data.enabled,
+            radius: data.radius,
+            bias: data.bias,
+            power: data.power,
+            kernel_size: data.kernel_size,
+        }
+    }
+}
+
+impl From<&SSAOConfig> for crate::config::SSAOConfigData {
+    fn from(config: &SSAOConfig) -> Self {
+        Self {
+            enabled: config.enabled,
+            radius: config.radius,
+            bias: config.bias,
+            power: config.power,
+            kernel_size: config.kernel_size,
         }
     }
 }
@@ -109,6 +135,28 @@ impl Notification {
     }
 }
 
+/// SSAO configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SSAOConfig {
+    pub enabled: bool,
+    pub radius: f32,
+    pub bias: f32,
+    pub power: f32,
+    pub kernel_size: u32,
+}
+
+impl Default for SSAOConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            radius: 1.0,
+            bias: 0.1,
+            power: 2.0,
+            kernel_size: 64,
+        }
+    }
+}
+
 /// Game state and logic
 pub struct Game {
     /// Time accumulator for animations
@@ -133,6 +181,8 @@ pub struct Game {
     pub skybox_config: SkyboxConfig,
     /// Nebula configuration
     pub nebula_config: NebulaConfig,
+    /// SSAO configuration
+    pub ssao_config: SSAOConfig,
     /// Camera focus animation state
     focus_animation: CameraFocusAnimation,
     /// Lock camera up vector to world Y axis
@@ -151,6 +201,8 @@ pub struct Game {
     pub current_material_name: String,
     /// Material editor visibility
     pub material_editor_open: bool,
+    /// Directional light settings
+    pub directional_light: crate::core::lighting::DirectionalLight,
 }
 
 impl Game {
@@ -162,6 +214,7 @@ impl Game {
         let cube2_id = scene.add_object("Cube 2".to_string(), ObjectType::Cube);
         scene.add_object("Nebula".to_string(), ObjectType::Nebula);
         scene.add_object("Skybox".to_string(), ObjectType::Skybox);
+        scene.add_object("SSAO".to_string(), ObjectType::SSAO);
 
         // Position the second cube offset from the first
         if let Some(cube2) = scene.get_object_mut(cube2_id) {
@@ -180,6 +233,7 @@ impl Game {
             rotation_speed: 2.0,
             skybox_config: SkyboxConfig::default(),
             nebula_config: NebulaConfig::default(),
+            ssao_config: SSAOConfig::default(),
             focus_animation: CameraFocusAnimation::new(),
             lock_camera_up: true, // Default to locked (world Y up)
             scene_dirty: false,
@@ -189,6 +243,7 @@ impl Game {
             material_library: crate::material_library::MaterialLibrary::default(),
             current_material_name: "New Material".to_string(),
             material_editor_open: false,
+            directional_light: crate::core::lighting::DirectionalLight::default(),
         }
     }
 

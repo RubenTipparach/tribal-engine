@@ -68,6 +68,7 @@ pub enum ObjectType {
     Nebula,
     Skybox,
     DirectionalLight,
+    SSAO, // SSAO settings singleton
     Mesh(String), // Custom mesh with path to .obj file
     Custom(u32), // For future custom mesh support
 }
@@ -108,6 +109,7 @@ impl SceneObject {
             ObjectType::Nebula => 10.0, // Nebula is larger
             ObjectType::Skybox => 50.0, // Skybox is very large
             ObjectType::DirectionalLight => 1.5, // Light visualization arrow
+            ObjectType::SSAO => 0.0, // SSAO is a settings singleton, no visual representation
             ObjectType::Mesh(_) => 5.0, // Default size for mesh objects
             ObjectType::Custom(_) => 2.0, // Default for custom objects
         }

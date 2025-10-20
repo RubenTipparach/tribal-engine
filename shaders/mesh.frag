@@ -7,15 +7,30 @@ layout(binding = 0) uniform UniformBufferObject {
     vec3 dirLightDirection;
     vec3 dirLightColor;
     float dirLightIntensity;
+    vec3 dirLightShadowColor;
+    float starDensity;
+    float starBrightness;
+    float pad0;
+    float pad1;
+    float pad2;
+    vec3 nebulaPrimaryColor;
+    float nebulaIntensity;
+    vec3 nebulaSecondaryColor;
+    float backgroundBrightness;
     uint pointLightCount;
+    uint ssaoEnabled;
 } ubo;
+
+// SSAO texture (blurred ambient occlusion)
+layout(binding = 1) uniform sampler2D ssaoTexture;
 
 // Material properties via push constants (after mat4 model at offset 64)
 layout(push_constant) uniform MaterialPushConstants {
     layout(offset = 64) vec3 albedo;
     layout(offset = 76) float metallic;
     layout(offset = 80) float roughness;
-    layout(offset = 84) float ao_intensity;
+    layout(offset = 84) float ambient_strength;
+    layout(offset = 88) float gi_strength;
 } material;
 
 layout(location = 0) in vec3 fragPosition;
@@ -26,6 +41,68 @@ layout(location = 3) in vec3 viewPos;
 layout(location = 0) out vec4 outColor;
 
 const float PI = 3.14159265359;
+
+// Hash function for procedural skybox (matches skybox shader)
+vec3 hash3(vec3 p) {
+    p = vec3(
+        dot(p, vec3(127.1, 311.7, 74.7)),
+        dot(p, vec3(269.5, 183.3, 246.1)),
+        dot(p, vec3(113.5, 271.9, 124.6))
+    );
+    return fract(sin(p) * 43758.5453123);
+}
+
+// Voronoi noise for star field
+vec4 voronoi(vec3 p, float scale) {
+    vec3 n = floor(p * scale);
+    vec3 f = fract(p * scale);
+
+    float minDist = 10.0;
+    vec3 cellColor = vec3(1.0);
+
+    for (int k = -1; k <= 1; k++) {
+        for (int j = -1; j <= 1; j++) {
+            for (int i = -1; i <= 1; i++) {
+                vec3 neighbor = vec3(float(i), float(j), float(k));
+                vec3 point = hash3(n + neighbor);
+                vec3 diff = neighbor + point - f;
+                float dist = length(diff);
+
+                if (dist < minDist) {
+                    minDist = dist;
+                    cellColor = hash3(n + neighbor + vec3(12.34, 56.78, 90.12));
+                }
+            }
+        }
+    }
+
+    return vec4(cellColor, minDist);
+}
+
+// Sample procedural skybox environment (simplified for GI)
+vec3 sampleSkybox(vec3 dir) {
+    // Simplified star field (single layer for performance)
+    float densityScale = 1.0 / max(ubo.starDensity, 0.1);
+    vec4 voronoi1 = voronoi(dir, 40.0 * ubo.starDensity);
+    float star1 = pow(max(0.0, 1.0 - voronoi1.w * (25.0 * densityScale)), 10.0);
+    vec3 stars = vec3(0.0);
+    if (star1 > 0.01) {
+        vec3 starColor = mix(vec3(0.8, 0.9, 1.0), vec3(1.0, 0.9, 0.8), voronoi1.x);
+        stars = starColor * star1 * 2.0 * ubo.starBrightness;
+    }
+
+    // Nebula contribution
+    vec3 spaceColor = vec3(ubo.backgroundBrightness);
+    float nebulaFactor = abs(dir.y) * 0.3 + 0.2;
+    vec3 nebulaColor = mix(
+        ubo.nebulaPrimaryColor,
+        ubo.nebulaSecondaryColor,
+        (dir.x * 0.5 + 0.5)
+    );
+    spaceColor += nebulaColor * nebulaFactor * ubo.nebulaIntensity;
+
+    return spaceColor + stars;
+}
 
 // PBR functions
 float DistributionGGX(vec3 N, vec3 H, float roughness) {
@@ -64,16 +141,6 @@ vec3 fresnelSchlick(float cosTheta, vec3 F0) {
     return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
 }
 
-// Simple vertex-based ambient occlusion approximation
-// Uses the idea that concave areas (facing away from view) are more occluded
-float calculateSimpleAO(vec3 N, vec3 V) {
-    float NdotV = max(dot(N, V), 0.0);
-    // Areas facing away from camera get more occlusion
-    float ao = mix(0.3, 1.0, NdotV);
-    // Add some vertex-based cavity darkening
-    float cavity = pow(NdotV, 2.0);
-    return mix(ao, 1.0, cavity);
-}
 
 vec3 calculateLight(vec3 N, vec3 V, vec3 L, vec3 lightColor, float lightIntensity, vec3 F0, vec3 albedo, float metallic, float roughness) {
     vec3 H = normalize(V + L);
@@ -112,12 +179,34 @@ void main() {
 
     // TODO: Add point lights (will need separate uniform buffer or storage buffer)
 
-    // Calculate ambient occlusion
-    float ao = calculateSimpleAO(N, V) * material.ao_intensity;
+    // Global Illumination: Sample skybox environment based on surface normal
+    vec3 giColor = vec3(0.0);
+    if (material.gi_strength > 0.001) {
+        // Sample skybox in the direction of the surface normal
+        vec3 skyboxSample = sampleSkybox(N);
 
-    // Ambient term with AO
-    vec3 ambient = vec3(0.03) * material.albedo * ao;
-    vec3 color = ambient + Lo;
+        // Mix between shadow color and skybox color based on light direction
+        float NdotL = dot(N, normalize(-ubo.dirLightDirection));
+        vec3 indirectLight = mix(ubo.dirLightShadowColor, skyboxSample, max(NdotL * 0.5 + 0.5, 0.0));
+
+        giColor = indirectLight * material.albedo * material.gi_strength;
+    }
+
+    // Sample SSAO from screen-space coordinates (only if enabled)
+    float ssaoValue = 1.0;
+    if (ubo.ssaoEnabled != 0u) {
+        vec2 screenUV = gl_FragCoord.xy / vec2(textureSize(ssaoTexture, 0));
+        ssaoValue = texture(ssaoTexture, screenUV).r;
+    }
+
+    // Ambient lighting term (simple constant ambient)
+    vec3 ambient = material.albedo * material.ambient_strength * 0.03;
+
+    // Apply SSAO to ambient and GI terms (darker crevices get less indirect light)
+    ambient *= ssaoValue;
+    giColor *= ssaoValue;
+
+    vec3 color = ambient + Lo + giColor;
 
     // HDR tonemapping and gamma correction
     color = color / (color + vec3(1.0));

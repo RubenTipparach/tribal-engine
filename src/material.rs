@@ -10,8 +10,10 @@ pub struct MaterialProperties {
     pub metallic: f32,
     /// Roughness factor (0.0 = smooth/glossy, 1.0 = rough/matte)
     pub roughness: f32,
-    /// Ambient occlusion intensity (0.0 = no AO, 1.0 = full AO)
-    pub ao_intensity: f32,
+    /// Ambient lighting intensity (0.0 = no ambient, 2.0 = bright ambient)
+    pub ambient_strength: f32,
+    /// Global illumination strength (0.0 = no GI, 1.0 = full GI)
+    pub gi_strength: f32,
 }
 
 impl Default for MaterialProperties {
@@ -20,18 +22,20 @@ impl Default for MaterialProperties {
             albedo: Vec3::new(0.8, 0.8, 0.8),
             metallic: 0.2,
             roughness: 0.6,
-            ao_intensity: 1.0,
+            ambient_strength: 1.0,
+            gi_strength: 0.5,
         }
     }
 }
 
 impl MaterialProperties {
-    pub fn new(albedo: Vec3, metallic: f32, roughness: f32, ao_intensity: f32) -> Self {
+    pub fn new(albedo: Vec3, metallic: f32, roughness: f32, ambient_strength: f32) -> Self {
         Self {
             albedo,
             metallic,
             roughness,
-            ao_intensity,
+            ambient_strength,
+            gi_strength: 0.5,
         }
     }
 
@@ -41,7 +45,8 @@ impl MaterialProperties {
             albedo: color,
             metallic: 0.0,
             roughness: 0.9,
-            ao_intensity: 1.0,
+            ambient_strength: 1.0,
+            gi_strength: 0.5,
         }
     }
 
@@ -51,7 +56,8 @@ impl MaterialProperties {
             albedo: color,
             metallic: 1.0,
             roughness,
-            ao_intensity: 1.0,
+            ambient_strength: 1.0,
+            gi_strength: 0.3,
         }
     }
 
@@ -61,7 +67,8 @@ impl MaterialProperties {
             albedo: color,
             metallic: 0.0,
             roughness: 0.3,
-            ao_intensity: 1.0,
+            ambient_strength: 1.0,
+            gi_strength: 0.5,
         }
     }
 }
