@@ -3,7 +3,7 @@ mod gui_builder;
 pub use gui_builder::{GuiPanelBuilder, GuiContentBuilder, SkyboxFxBuilder};
 
 use imgui::{Context, Ui};
-use crate::game::{Game, SkyboxConfig, SSAOConfig};
+use crate::game::{Game, SkyboxConfig, SSAOConfig, StarConfig};
 use crate::nebula::NebulaConfig;
 use crate::config::EngineConfig;
 use crate::scene::{SceneData, ObjectType};
@@ -148,6 +148,66 @@ impl UiManager {
         }
         if reset_clicked {
             game.nebula_config = NebulaConfig::default();
+            game.mark_config_dirty();
+        }
+    }
+
+    /// Build star settings UI
+    pub fn build_star_settings(ui: &Ui, game: &mut Game) {
+        let mut save_clicked = false;
+        let mut load_clicked = false;
+        let mut reset_clicked = false;
+
+        // Store original config to detect changes
+        let orig_config = game.star_config.clone();
+
+        GuiPanelBuilder::new(ui, "Star Settings")
+            .size(350.0, 450.0)
+            .position(270.0, 10.0)
+            .build(|content| {
+                content.text("Procedural star shader parameters");
+                content.text("Use transform gizmo to move/scale star");
+
+                let config = &mut game.star_config;
+
+                content
+                    .header("Appearance")
+                    .color_picker("Star Color Tint", &mut config.color)
+                    .slider_f32("Gamma", &mut config.gamma, 1.0, 3.0)
+                    .slider_f32("Exposure", &mut config.exposure, 0.1, 30.0)
+
+                    .header("Animation")
+                    .slider_f32("High Speed", &mut config.speed_hi, 0.0, 10.0)
+                    .slider_f32("Low Speed", &mut config.speed_low, 0.0, 5.0)
+
+                    .header("Detail")
+                    .slider_f32("Zoom", &mut config.zoom, 0.1, 2.0);
+
+                let (s, l, r) = content.config_buttons();
+                save_clicked = s;
+                load_clicked = l;
+                reset_clicked = r;
+            });
+
+        // Check if config changed
+        if orig_config.color != game.star_config.color
+            || orig_config.gamma != game.star_config.gamma
+            || orig_config.exposure != game.star_config.exposure
+            || orig_config.speed_hi != game.star_config.speed_hi
+            || orig_config.speed_low != game.star_config.speed_low
+            || orig_config.zoom != game.star_config.zoom
+        {
+            game.mark_config_dirty();
+        }
+
+        if save_clicked {
+            Self::save_star_config(game);
+        }
+        if load_clicked {
+            Self::load_star_config(game);
+        }
+        if reset_clicked {
+            game.star_config = StarConfig::default();
             game.mark_config_dirty();
         }
     }
@@ -1010,6 +1070,7 @@ impl UiManager {
             match selected_type {
                 Some(ObjectType::Skybox) => Self::build_skybox_settings(&ui, game),
                 Some(ObjectType::Nebula) => Self::build_nebula_settings(&ui, game),
+                Some(ObjectType::Sphere) => Self::build_star_settings(&ui, game),
                 Some(ObjectType::DirectionalLight) => Self::build_directional_light_settings(&ui, game),
                 Some(ObjectType::SSAO) => Self::build_ssao_settings(&ui, game),
                 Some(ObjectType::GameManager) => Self::build_game_manager_settings(&ui, game),
@@ -1101,6 +1162,7 @@ impl UiManager {
             Ok(config) => {
                 game.nebula_config = config.nebula.into();
                 game.sync_nebula_transform(); // Sync position/rotation to ECS
+                game.sync_star_to_nebula(); // Ensure star stays at nebula center
                 println!("Nebula config loaded from {}", CONFIG_PATH);
                 game.config_dirty = false;
                 game.add_notification("Nebula config loaded".to_string(), 2.0);
@@ -1108,6 +1170,34 @@ impl UiManager {
             Err(e) => {
                 eprintln!("Failed to load nebula config: {}", e);
                 game.add_notification("Failed to load nebula config".to_string(), 3.0);
+            }
+        }
+    }
+
+    fn save_star_config(game: &mut Game) {
+        let mut engine_config = EngineConfig::load_or_default(CONFIG_PATH);
+        engine_config.star = (&game.star_config).into();
+        if let Err(e) = engine_config.save(CONFIG_PATH) {
+            eprintln!("Failed to save star config: {}", e);
+            game.add_notification("Failed to save star config".to_string(), 3.0);
+        } else {
+            println!("Star config saved to {}", CONFIG_PATH);
+            game.config_dirty = false;
+            game.add_notification("Star config saved".to_string(), 2.0);
+        }
+    }
+
+    fn load_star_config(game: &mut Game) {
+        match EngineConfig::load(CONFIG_PATH) {
+            Ok(config) => {
+                game.star_config = config.star.into();
+                println!("Star config loaded from {}", CONFIG_PATH);
+                game.config_dirty = false;
+                game.add_notification("Star config loaded".to_string(), 2.0);
+            }
+            Err(e) => {
+                eprintln!("Failed to load star config: {}", e);
+                game.add_notification("Failed to load star config".to_string(), 3.0);
             }
         }
     }
@@ -1120,6 +1210,7 @@ impl UiManager {
                 game.nebula_config = config.nebula.into();
                 game.camera = config.camera.into();
                 game.ssao_config = config.ssao.into();
+                game.star_config = config.star.into();
                 println!("All configs loaded from {}", CONFIG_PATH);
             }
             Err(e) => {
@@ -1139,6 +1230,7 @@ impl UiManager {
             skybox: (&game.skybox_config).into(),
             camera: (&game.camera).into(),
             ssao: (&game.ssao_config).into(),
+            star: (&game.star_config).into(),
         };
 
         if let Err(e) = engine_config.save(CONFIG_PATH) {
@@ -1154,12 +1246,13 @@ impl UiManager {
         let scene_data = SceneData::from_scene_graph(&game.scene);
         let scene_result = scene_data.save(SCENE_PATH);
 
-        // Save all configs (skybox, nebula, camera, SSAO)
+        // Save all configs (skybox, nebula, camera, SSAO, star)
         let engine_config = EngineConfig {
             nebula: (&game.nebula_config).into(),
             skybox: (&game.skybox_config).into(),
             camera: (&game.camera).into(),
             ssao: (&game.ssao_config).into(),
+            star: (&game.star_config).into(),
         };
         let config_result = engine_config.save(CONFIG_PATH);
 
@@ -1189,6 +1282,7 @@ impl UiManager {
             Ok(scene_data) => {
                 game.scene = scene_data.to_scene_graph();
                 game.sync_nebula_transform(); // Sync nebula transform to ECS
+                game.sync_star_to_nebula(); // Ensure star stays at nebula center
                 println!("Scene loaded from {}", SCENE_PATH);
             }
             Err(e) => {
@@ -1231,8 +1325,25 @@ impl UiManager {
             game.scene.add_object("SSAO".to_string(), crate::scene::ObjectType::SSAO);
         }
 
+        // Ensure DirectionalLight singleton always exists (add if missing, mark as editor-only)
+        if game.scene.find_by_type(crate::scene::ObjectType::DirectionalLight).is_none() {
+            let light_id = game.scene.add_object("Directional Light".to_string(), crate::scene::ObjectType::DirectionalLight);
+            if let Some(light_obj) = game.scene.get_object_mut(light_id) {
+                light_obj.editor_only = true; // Light visualization is editor-only
+            }
+        } else {
+            // If it already exists, make sure it's marked editor-only
+            if let Some(light_id) = game.scene.find_by_type(crate::scene::ObjectType::DirectionalLight) {
+                if let Some(light_obj) = game.scene.get_object_mut(light_id) {
+                    light_obj.editor_only = true;
+                }
+            }
+        }
+
         // Sync nebula transform from loaded scene to ECS
         game.sync_nebula_transform();
+        // Ensure star is always at nebula center
+        game.sync_star_to_nebula();
 
         println!("Scene initialized from {}", SCENE_PATH);
     }

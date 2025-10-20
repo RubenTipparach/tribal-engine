@@ -11,6 +11,7 @@ pub struct EngineConfig {
     pub skybox: SkyboxConfigData,
     pub camera: CameraConfigData,
     pub ssao: SSAOConfigData,
+    pub star: StarConfigData,
 }
 
 impl Default for EngineConfig {
@@ -20,6 +21,7 @@ impl Default for EngineConfig {
             skybox: SkyboxConfigData::default(),
             camera: CameraConfigData::default(),
             ssao: SSAOConfigData::default(),
+            star: StarConfigData::default(),
         }
     }
 }
@@ -175,6 +177,31 @@ impl Default for SSAOConfigData {
             bias: 0.1,
             power: 2.0,
             kernel_size: 64,
+        }
+    }
+}
+
+/// Star configuration (serializable)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StarConfigData {
+    #[serde(with = "vec3_serde")]
+    pub color: Vec3,
+    pub gamma: f32,
+    pub exposure: f32,
+    pub speed_hi: f32,
+    pub speed_low: f32,
+    pub zoom: f32,
+}
+
+impl Default for StarConfigData {
+    fn default() -> Self {
+        Self {
+            color: Vec3::new(1.0, 0.9, 0.7),
+            gamma: 2.2,
+            exposure: 40.2,
+            speed_hi: 2.0,
+            speed_low: 0.5,
+            zoom: 0.5,
         }
     }
 }

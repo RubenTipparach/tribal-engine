@@ -85,6 +85,8 @@ pub struct SceneObject {
     pub visible: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub material: Option<String>, // Name of material from material library
+    #[serde(default)]
+    pub editor_only: bool, // Don't render during gameplay
 }
 
 impl SceneObject {
@@ -96,11 +98,18 @@ impl SceneObject {
             transform: Transform::default(),
             visible: true,
             material: None,
+            editor_only: false,
         }
     }
 
     pub fn with_transform(mut self, transform: Transform) -> Self {
         self.transform = transform;
+        self
+    }
+
+    /// Mark object as editor-only (won't render during gameplay)
+    pub fn editor_only(mut self) -> Self {
+        self.editor_only = true;
         self
     }
 
@@ -436,13 +445,15 @@ impl Default for SceneData {
         Self {
             objects: vec![
                 SceneObject::new(0, "Cube 1".to_string(), ObjectType::Cube)
-                    .with_transform(Transform::identity()),
+                    .with_transform(Transform::identity())
+                    .editor_only(), // Debug cube - editor only
                 SceneObject::new(1, "Cube 2".to_string(), ObjectType::Cube)
                     .with_transform(Transform::new(
                         glam::Vec3::new(3.0, 0.0, 0.0),
                         glam::Quat::IDENTITY,
                         glam::Vec3::ONE
-                    )),
+                    ))
+                    .editor_only(), // Debug cube - editor only
                 SceneObject::new(2, "Fed Cruiser".to_string(), ObjectType::Mesh("content/models/Fed_cruiser_ship.obj".to_string()))
                     .with_transform(Transform::new(
                         glam::Vec3::new(0.0, 3.0, 0.0),

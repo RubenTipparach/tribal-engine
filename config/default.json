@@ -25,41 +25,41 @@
       "z": 0.1
     },
     "light_color": {
-      "x": 0.0,
-      "y": 0.1210477,
-      "z": 0.7837838
+      "x": 0.46718144,
+      "y": 0.09087198,
+      "z": 0.018037895
     },
     "light_intensity": 0.033333335,
     "max_distance": 10000.0
   },
   "skybox": {
-    "star_density": 1.9460953,
-    "star_brightness": 6.412,
+    "star_density": 2.0,
+    "star_brightness": 3.0,
     "nebula_primary_color": {
-      "x": 0.0,
-      "y": 0.122265264,
-      "z": 0.36679536
+      "x": 0.1,
+      "y": 0.2,
+      "z": 0.4
     },
     "nebula_secondary_color": {
-      "x": 0.18999715,
-      "y": 0.02325547,
-      "z": 0.3011583
+      "x": 0.6,
+      "y": 0.3,
+      "z": 0.8
     },
-    "nebula_intensity": 0.019262997,
+    "nebula_intensity": 1.0,
     "background_brightness": 0.0
   },
   "camera": {
     "position": {
-      "x": -3.1301298,
-      "y": 7.209311,
-      "z": 1.7364055
+      "x": 3.2622972,
+      "y": -5.9985194,
+      "z": -1.0852896
     },
-    "pitch": -0.23415267,
-    "yaw": -2.4136503,
-    "roll": -0.8058873,
+    "pitch": 1.2627215,
+    "yaw": 2.0162652,
+    "roll": -0.79051995,
     "move_speed": 5.0,
     "mouse_sensitivity": 0.003,
-    "fov": 70.0
+    "fov": 45.0
   },
   "ssao": {
     "enabled": false,
@@ -67,5 +67,17 @@
     "bias": 0.1,
     "power": 2.0,
     "kernel_size": 64
+  },
+  "star": {
+    "color": {
+      "x": 1.0,
+      "y": 0.9459758,
+      "z": 0.9073359
+    },
+    "gamma": 1.849,
+    "exposure": 1.801,
+    "speed_hi": 1.147,
+    "speed_low": 1.161,
+    "zoom": 1.31
   }
 }

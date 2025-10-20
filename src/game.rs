@@ -49,6 +49,63 @@ impl From<&SkyboxConfig> for crate::config::SkyboxConfigData {
     }
 }
 
+/// Star shader configuration
+#[derive(Clone)]
+pub struct StarConfig {
+    /// Star color tint (RGB)
+    pub color: Vec3,
+    /// Gamma correction value
+    pub gamma: f32,
+    /// Exposure multiplier
+    pub exposure: f32,
+    /// Animation speed for high-frequency details
+    pub speed_hi: f32,
+    /// Animation speed for low-frequency details
+    pub speed_low: f32,
+    /// Zoom/scale of noise patterns
+    pub zoom: f32,
+}
+
+impl Default for StarConfig {
+    fn default() -> Self {
+        Self {
+            color: Vec3::new(1.0, 0.9, 0.7), // Yellowish
+            gamma: 2.2,
+            exposure: 40.2,
+            speed_hi: 2.0,
+            speed_low: 0.5,
+            zoom: 0.5,
+        }
+    }
+}
+
+// Star config conversions
+impl From<crate::config::StarConfigData> for StarConfig {
+    fn from(data: crate::config::StarConfigData) -> Self {
+        Self {
+            color: data.color,
+            gamma: data.gamma,
+            exposure: data.exposure,
+            speed_hi: data.speed_hi,
+            speed_low: data.speed_low,
+            zoom: data.zoom,
+        }
+    }
+}
+
+impl From<&StarConfig> for crate::config::StarConfigData {
+    fn from(config: &StarConfig) -> Self {
+        Self {
+            color: config.color,
+            gamma: config.gamma,
+            exposure: config.exposure,
+            speed_hi: config.speed_hi,
+            speed_low: config.speed_low,
+            zoom: config.zoom,
+        }
+    }
+}
+
 // SSAO config conversions
 impl From<crate::config::SSAOConfigData> for SSAOConfig {
     fn from(data: crate::config::SSAOConfigData) -> Self {
@@ -212,6 +269,8 @@ pub struct Game {
     pub directional_light: crate::core::lighting::DirectionalLight,
     /// Game Manager - play/pause state and scenario parameters
     pub game_manager: GameManager,
+    /// Star configuration for shader parameters
+    pub star_config: StarConfig,
 }
 
 impl Game {
@@ -270,6 +329,7 @@ impl Game {
             material_editor_open: false,
             directional_light: crate::core::lighting::DirectionalLight::default(),
             game_manager: GameManager::default(),
+            star_config: StarConfig::default(),
         };
 
         // Sync nebula transform from scene to ECS
@@ -359,6 +419,11 @@ impl Game {
             let mut transform_changed = false;
             let obj_type = obj.object_type.clone(); // Store for later check
 
+            // Don't allow moving the star - it's always locked to nebula center
+            if obj_type == ObjectType::Sphere {
+                return;
+            }
+
             match self.gizmo_state.mode {
                 crate::gizmo::GizmoMode::Translate => {
                     let old_pos = obj.transform.position;
@@ -404,16 +469,17 @@ impl Game {
                 }
             }
 
-            // Drop the mutable borrow before calling other methods
-            drop(obj);
+            // End the mutable borrow before calling other methods
+            let _ = obj;
 
             // Mark scene dirty if transform changed
             if transform_changed {
                 self.mark_scene_dirty();
 
-                // If nebula was transformed, sync to ECS entity
+                // If nebula was transformed, sync to ECS entity and update star position
                 if obj_type == ObjectType::Nebula {
                     self.sync_nebula_transform();
+                    self.sync_star_to_nebula();
                 }
             }
         }
@@ -514,6 +580,24 @@ impl Game {
         }
     }
 
+    /// Sync star position to nebula center
+    /// Called whenever the nebula is moved to keep the star at its center
+    pub fn sync_star_to_nebula(&mut self) {
+        // Get nebula position
+        if let Some(nebula_id) = self.scene.find_by_type(ObjectType::Nebula) {
+            if let Some(nebula_obj) = self.scene.get_object(nebula_id) {
+                let nebula_pos = nebula_obj.transform.position;
+
+                // Update star position to match nebula center
+                if let Some(star_id) = self.scene.find_by_type(ObjectType::Sphere) {
+                    if let Some(star_obj) = self.scene.get_object_mut(star_id) {
+                        star_obj.transform.position = nebula_pos;
+                    }
+                }
+            }
+        }
+    }
+
     /// Get nebula model matrix from ECS entity
     pub fn get_nebula_model_matrix(&self) -> Mat4 {
         use crate::ecs::components::{Position, Rotation};
@@ -571,10 +655,12 @@ impl Game {
 
     /// Get all visible cubes with their model matrices (includes nebula and spheres for picking)
     pub fn get_visible_cubes(&self) -> Vec<Mat4> {
+        let in_edit_mode = self.game_manager.mode == crate::game_manager::GameMode::Edit;
         self.scene
             .objects_sorted()
             .iter()
             .filter(|obj| obj.visible)
+            .filter(|obj| !obj.editor_only || in_edit_mode)
             .filter(|obj| matches!(obj.object_type, ObjectType::Cube))
             .map(|obj| obj.transform.model_matrix())
             .collect()
@@ -582,10 +668,12 @@ impl Game {
 
     /// Get all visible sphere objects (returns model matrix)
     pub fn get_visible_spheres(&self) -> Vec<Mat4> {
+        let in_edit_mode = self.game_manager.mode == crate::game_manager::GameMode::Edit;
         self.scene
             .objects_sorted()
             .iter()
             .filter(|obj| obj.visible)
+            .filter(|obj| !obj.editor_only || in_edit_mode)
             .filter(|obj| matches!(obj.object_type, ObjectType::Sphere))
             .map(|obj| obj.transform.model_matrix())
             .collect()
@@ -593,10 +681,12 @@ impl Game {
 
     /// Get all visible mesh objects (returns path and model matrix)
     pub fn get_visible_meshes(&self) -> Vec<(String, Mat4)> {
+        let in_edit_mode = self.game_manager.mode == crate::game_manager::GameMode::Edit;
         self.scene
             .objects_sorted()
             .iter()
             .filter(|obj| obj.visible)
+            .filter(|obj| !obj.editor_only || in_edit_mode)
             .filter_map(|obj| {
                 if let ObjectType::Mesh(path) = &obj.object_type {
                     Some((path.clone(), obj.transform.model_matrix()))

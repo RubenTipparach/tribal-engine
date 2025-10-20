@@ -26,7 +26,7 @@ impl Camera {
             roll: 0.0,
             fov: 45.0_f32.to_radians(),
             near_plane: 0.1,
-            far_plane: 1000.0,
+            far_plane: 50000.0,  // Balanced far plane for both near precision and distant objects
         }
     }
     
@@ -63,14 +63,28 @@ impl Camera {
         Mat4::look_at_rh(self.position, target, up)
     }
     
-    /// Get the projection matrix for rendering
+    /// Get the projection matrix for rendering (near-range for regular objects)
     pub fn projection_matrix(&self, aspect_ratio: f32) -> Mat4 {
         let mut proj = Mat4::perspective_rh(self.fov, aspect_ratio, self.near_plane, self.far_plane);
         // Flip Y for Vulkan coordinate system
         proj.y_axis.y *= -1.0;
         proj
     }
-    
+
+    /// Get the far-range projection matrix for celestial objects
+    /// Uses extended far plane to render distant objects without z-fighting on close objects
+    /// The far pass starts exactly where the near pass ends to maintain depth buffer compatibility
+    pub fn far_projection_matrix(&self, aspect_ratio: f32) -> Mat4 {
+        // Far pass: starts exactly where near pass ends and extends much further
+        let far_near = self.far_plane;  // Start exactly at near far plane
+        let far_far = self.far_plane * 10.0;   // Extend 10x beyond
+
+        let mut proj = Mat4::perspective_rh(self.fov, aspect_ratio, far_near, far_far);
+        // Flip Y for Vulkan coordinate system
+        proj.y_axis.y *= -1.0;
+        proj
+    }
+
     /// Get field of view in radians
     pub fn fov(&self) -> f32 {
         self.fov
