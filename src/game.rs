@@ -229,6 +229,12 @@ pub struct Game {
     pub nebula_entity: Option<hecs::Entity>,
     /// Star entity ID in ECS
     pub star_entity: Option<hecs::Entity>,
+    /// Federation Cruiser entity ID in ECS
+    pub fed_cruiser_entity: Option<hecs::Entity>,
+    /// Hologram ship for turn-based movement planning
+    hologram_ship_position: Option<DVec3>,
+    /// Is the player currently dragging the hologram ship?
+    dragging_hologram: bool,
     /// Gizmo state for 3D manipulation
     pub gizmo_state: GizmoState,
     /// Object picker for mouse selection
@@ -302,6 +308,15 @@ impl Game {
         let mut ecs_world = crate::ecs::EcsWorld::new();
         let (nebula_entity, star_entity) = crate::ecs::init::init_default_scene(&mut ecs_world.world);
 
+        // Add Federation Cruiser at origin
+        use glam::{DVec3, DQuat};
+        let fed_cruiser_entity = crate::ecs::init::create_ship_entity(
+            &mut ecs_world.world,
+            "Federation Cruiser".to_string(),
+            DVec3::new(0.0, 0.0, 0.0), // At origin
+            DQuat::IDENTITY,
+        );
+
         let mut game = Self {
             time: 0.0,
             camera: Camera::default(),
@@ -309,6 +324,9 @@ impl Game {
             ecs_world,
             nebula_entity: Some(nebula_entity),
             star_entity: Some(star_entity),
+            fed_cruiser_entity: Some(fed_cruiser_entity),
+            hologram_ship_position: None,
+            dragging_hologram: false,
             gizmo_state: GizmoState::new(),
             object_picker: ObjectPicker::new(),
             ship_velocity: Vec3::ZERO,
@@ -340,7 +358,7 @@ impl Game {
 
     /// Handle mouse hover for object picking
     pub fn handle_mouse_hover(&mut self, mouse_x: f32, mouse_y: f32, viewport_width: f32, viewport_height: f32) {
-        // Check gizmo hover first if enabled and object selected
+        // Check gizmo hover if enabled and object selected (edit mode)
         if self.gizmo_state.enabled && self.scene.selected_object().is_some() {
             let obj = self.scene.selected_object().unwrap();
             let object_pos = obj.transform.position;
@@ -697,6 +715,86 @@ impl Game {
             .collect()
     }
 
+    /// Get holographic objects for rendering with holographic effect
+    /// Returns: Vec<(mesh_path, model_matrix, color, fresnel_power, scanline_speed)>
+    pub fn get_holographic_objects(&self) -> Vec<(String, Mat4, glam::Vec4, f32, f32)> {
+        let mut holograms = Vec::new();
+
+        // In play mode, show hologram ship for movement planning
+        if self.game_manager.mode == crate::game_manager::GameMode::Play {
+            if let Some(hologram_pos) = self.hologram_ship_position {
+                // Get the ship's mesh path
+                if let Some(fed_entity) = self.fed_cruiser_entity {
+                    // Get ship transform from ECS
+                    if let Ok(spatial) = self.ecs_world.world.query_one::<&crate::ecs::components::Spatial>(fed_entity) {
+                        // Create model matrix for hologram at planned position
+                        let position = hologram_pos.as_vec3();
+                        let rotation = spatial.rotation; // Keep same rotation for now
+                        let scale = Vec3::splat(spatial.scale as f32);
+
+                        let model_matrix = Mat4::from_scale_rotation_translation(
+                            scale,
+                            rotation.as_f32(),
+                            position,
+                        );
+
+                        // Cyan holographic color with transparency
+                        let color = glam::Vec4::new(0.0, 0.8, 1.0, 0.6); // Cyan, 60% opacity
+                        let fresnel_power = 3.0; // Strong edge glow
+                        let scanline_speed = 2.0; // Medium animation speed
+
+                        holograms.push((
+                            "content/models/Fed_cruiser_ship.obj".to_string(),
+                            model_matrix,
+                            color,
+                            fresnel_power,
+                            scanline_speed,
+                        ));
+                    }
+                }
+            }
+        }
+
+        holograms
+    }
+
+    /// Get outlined objects (selected or highlighted objects)
+    /// Returns: Vec<(mesh_path, model_matrix, outline_color, outline_width)>
+    pub fn get_outlined_objects(&self) -> Vec<(String, Mat4, glam::Vec4, f32)> {
+        let in_edit_mode = self.game_manager.mode == crate::game_manager::GameMode::Edit;
+
+        // In edit mode, outline the selected object
+        if in_edit_mode {
+            if let Some(selected_obj) = self.scene.selected_object() {
+                if let ObjectType::Mesh(ref mesh_path) = selected_obj.object_type {
+                    if selected_obj.visible {
+                        let model_matrix = selected_obj.transform.model_matrix();
+                        let outline_color = glam::Vec4::new(1.0, 0.5, 0.0, 1.0); // Orange outline
+                        let outline_width = 0.02; // 2cm outline
+                        return vec![(mesh_path.clone(), model_matrix, outline_color, outline_width)];
+                    }
+                }
+            }
+        }
+
+        Vec::new()
+    }
+
+    /// Update ship bounds when mesh is loaded
+    /// This is called from the renderer after loading a mesh
+    pub fn update_ship_bounds(&mut self, mesh_path: &str, bounds_min: Vec3, bounds_max: Vec3) {
+        // Check if this is the Fed Cruiser mesh
+        if mesh_path.contains("Fed_cruiser") {
+            if let Some(fed_entity) = self.fed_cruiser_entity {
+                if let Ok(ship) = self.ecs_world.world.query_one_mut::<&mut crate::ecs::components::Ship>(fed_entity) {
+                    ship.bounds_min = bounds_min;
+                    ship.bounds_max = bounds_max;
+                    println!("Updated Fed Cruiser bounds: {:?} to {:?}", bounds_min, bounds_max);
+                }
+            }
+        }
+    }
+
     /// Check if nebula is visible
     pub fn is_nebula_visible(&self) -> bool {
         if let Some(nebula_id) = self.scene.find_by_type(ObjectType::Nebula) {
@@ -978,8 +1076,9 @@ impl Game {
         self.game_manager.mode = crate::game_manager::GameMode::Play;
         self.game_manager.pause_state = crate::game_manager::PauseState::Running;
 
-        // 5. Clear any editor selections
+        // 5. Clear any editor selections and disable gizmo
         self.scene.deselect();
+        self.gizmo_state.enabled = false;
 
         println!("Play mode initialized!");
         self.add_notification("Play mode started".to_string(), 2.0);
@@ -1021,5 +1120,174 @@ impl Game {
         game.config_dirty = false;
 
         game
+    }
+
+    // ===== HOLOGRAM SHIP TURN-BASED MOVEMENT =====
+
+    /// Initialize hologram ship at current ship position when entering play mode or starting turn
+    pub fn spawn_hologram_ship(&mut self) {
+        if let Some(fed_entity) = self.fed_cruiser_entity {
+            if let Ok(spatial) = self.ecs_world.world.query_one::<&crate::ecs::components::Spatial>(fed_entity) {
+                self.hologram_ship_position = Some(spatial.position);
+            }
+        }
+    }
+
+    /// Ray-plane intersection for dragging hologram ship on its local XZ plane
+    /// Returns intersection point in world space, or None if no intersection
+    fn intersect_ray_with_ship_plane(
+        &self,
+        ray_origin: DVec3,
+        ray_direction: DVec3,
+    ) -> Option<DVec3> {
+        if let Some(fed_entity) = self.fed_cruiser_entity {
+            if let Ok(spatial) = self.ecs_world.world.query_one::<&crate::ecs::components::Spatial>(fed_entity) {
+                // The ship's local XZ plane is its local coordinate system
+                // We want to constrain movement to this plane (ship's "deck")
+
+                // Plane normal is ship's local Y axis (up vector)
+                let ship_rotation = spatial.rotation;
+                let plane_normal = ship_rotation * DVec3::Y; // Transform local up to world space
+
+                // Plane point is ship's current position
+                let plane_point = spatial.position;
+
+                // Ray-plane intersection: t = (plane_point - ray_origin) · plane_normal / (ray_direction · plane_normal)
+                let denominator = ray_direction.dot(plane_normal);
+
+                // Check if ray is parallel to plane (or pointing away)
+                if denominator.abs() < 0.0001 {
+                    return None;
+                }
+
+                let t = (plane_point - ray_origin).dot(plane_normal) / denominator;
+
+                // Check if intersection is in front of camera
+                if t < 0.0 {
+                    return None;
+                }
+
+                // Calculate intersection point
+                let intersection = ray_origin + ray_direction * t;
+                Some(intersection)
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
+
+    /// Handle mouse click for hologram ship interaction (in play mode)
+    pub fn handle_hologram_click(&mut self, mouse_x: f32, mouse_y: f32, viewport_width: f32, viewport_height: f32) -> bool {
+        if self.game_manager.mode != crate::game_manager::GameMode::Play {
+            return false;
+        }
+
+        // Create ray from camera through mouse position
+        let (ray_origin, ray_direction) = self.camera.screen_to_world_ray(
+            mouse_x,
+            mouse_y,
+            viewport_width,
+            viewport_height,
+        );
+
+        // Check if clicking on hologram ship
+        if let Some(hologram_pos) = self.hologram_ship_position {
+            // Simple sphere intersection test (using ship bounds)
+            if let Some(fed_entity) = self.fed_cruiser_entity {
+                if let Ok(ship) = self.ecs_world.world.query_one::<&crate::ecs::components::Ship>(fed_entity) {
+                    let bounds_radius = ((ship.bounds_max - ship.bounds_min).length() * 0.5) as f64;
+                    let to_hologram = hologram_pos - ray_origin;
+                    let projection = to_hologram.dot(ray_direction);
+
+                    if projection > 0.0 {
+                        let closest_point = ray_origin + ray_direction * projection;
+                        let distance = (closest_point - hologram_pos).length();
+
+                        if distance < bounds_radius {
+                            // Start dragging hologram
+                            self.dragging_hologram = true;
+                            return true;
+                        }
+                    }
+                }
+            }
+        } else {
+            // If no hologram exists, spawn it at ship position
+            self.spawn_hologram_ship();
+        }
+
+        false
+    }
+
+    /// Handle mouse drag for hologram ship (in play mode)
+    pub fn handle_hologram_drag(&mut self, mouse_x: f32, mouse_y: f32, viewport_width: f32, viewport_height: f32) {
+        if !self.dragging_hologram {
+            return;
+        }
+
+        // Create ray from camera through mouse position
+        let (ray_origin, ray_direction) = self.camera.screen_to_world_ray(
+            mouse_x,
+            mouse_y,
+            viewport_width,
+            viewport_height,
+        );
+
+        // Intersect with ship's local XZ plane
+        if let Some(intersection) = self.intersect_ray_with_ship_plane(ray_origin, ray_direction) {
+            // Constrain to movement range
+            if let Some(fed_entity) = self.fed_cruiser_entity {
+                if let Ok((spatial, ship)) = self.ecs_world.world.query_one::<(&crate::ecs::components::Spatial, &crate::ecs::components::Ship)>(fed_entity) {
+                    let ship_pos = spatial.position;
+                    let offset = intersection - ship_pos;
+                    let distance = offset.length();
+
+                    // Clamp to max movement range
+                    let clamped_offset = if distance > ship.max_movement_range as f64 {
+                        offset.normalize() * ship.max_movement_range as f64
+                    } else {
+                        offset
+                    };
+
+                    self.hologram_ship_position = Some(ship_pos + clamped_offset);
+                }
+            }
+        }
+    }
+
+    /// Stop dragging hologram ship
+    pub fn handle_hologram_release(&mut self) {
+        self.dragging_hologram = false;
+    }
+
+    /// Confirm movement and execute ship to hologram position
+    pub fn execute_ship_movement(&mut self) {
+        if let Some(hologram_pos) = self.hologram_ship_position {
+            if let Some(fed_entity) = self.fed_cruiser_entity {
+                // Update ship's planned position
+                if let Ok(ship) = self.ecs_world.world.query_one_mut::<&mut crate::ecs::components::Ship>(fed_entity) {
+                    ship.planned_position = hologram_pos;
+
+                    // Calculate bezier control point based on ship velocity/momentum
+                    // For now, simple: midpoint between current and target
+                    if let Ok(spatial) = self.ecs_world.world.query_one::<&crate::ecs::components::Spatial>(fed_entity) {
+                        ship.control_point = (spatial.position + hologram_pos) * 0.5;
+                    }
+                }
+
+                // Actually move the ship to hologram position
+                if let Ok(mut spatial) = self.ecs_world.world.query_one_mut::<&mut crate::ecs::components::Spatial>(fed_entity) {
+                    spatial.position = hologram_pos;
+                }
+
+                // Clear hologram after movement
+                self.hologram_ship_position = None;
+                self.dragging_hologram = false;
+
+                self.add_notification("Ship moved!".to_string(), 2.0);
+            }
+        }
     }
 }

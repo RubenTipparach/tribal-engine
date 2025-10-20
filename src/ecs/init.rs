@@ -59,37 +59,27 @@ pub fn create_star_entity(
     star
 }
 
-/// Create a ship entity
+/// Create a ship entity with tactical movement capabilities
 pub fn create_ship_entity(
     world: &mut World,
     name: String,
     position: DVec3,
-    faction: String,
+    rotation: DQuat,
 ) -> Entity {
+    let mut ship = Ship::new(name.clone());
+
+    // Initialize ship's turn start position
+    ship.start_turn(position, rotation);
+
     world.spawn((
         Position(position),
-        Rotation(DQuat::IDENTITY),
+        Rotation(rotation),
         Scale(DVec3::ONE),
-        Velocity(DVec3::ZERO),
-        AngularVelocity(DVec3::ZERO),
-        Mass(50_000.0), // 50 tons
-        Health::new(100.0),
-        Ship {
-            name: name.clone(),
-            faction,
-            thrust_force: 100_000.0,    // 100kN
-            rotation_torque: 50_000.0,  // 50kNm
-        },
+        ship,
         EntityType::Ship,
         Visual {
-            mesh_name: "ship".to_string(),
+            mesh_name: "Fed_cruiser_ship.obj".to_string(),
             material_name: "ship_material".to_string(),
-        },
-        TurnState {
-            pending_orders: Vec::new(),
-            completed_orders: Vec::new(),
-            action_points: 10,
-            max_action_points: 10,
         },
     ))
 }

@@ -436,6 +436,41 @@ impl UiManager {
         });
     }
 
+    /// Build play mode UI - shows ship controls and movement planning
+    fn build_play_mode_ui(ui: &Ui, game: &mut Game) {
+        // Turn info panel
+        ui.window("Turn Information")
+            .position([10.0, 80.0], imgui::Condition::FirstUseEver)
+            .size([300.0, 200.0], imgui::Condition::FirstUseEver)
+            .build(|| {
+                ui.text_colored([0.3, 0.8, 1.0, 1.0], "Current Turn");
+                ui.separator();
+
+                ui.text(format!("Turn: {}", game.game_manager.current_turn));
+
+                if game.game_manager.max_turns > 0 {
+                    ui.text(format!("Max Turns: {}", game.game_manager.max_turns));
+
+                    let turns_remaining = game.game_manager.max_turns.saturating_sub(game.game_manager.current_turn);
+                    ui.text(format!("Remaining: {}", turns_remaining));
+                }
+
+                ui.spacing();
+                ui.separator();
+                ui.spacing();
+
+                ui.text("Turn Duration: 10 seconds");
+                ui.text("Phase: Planning");
+
+                ui.spacing();
+
+                if ui.button_with_size("End Turn", [280.0, 30.0]) {
+                    game.add_notification("Turn ended (not implemented)".to_string(), 2.0);
+                    // TODO: Execute turn and advance to next turn
+                }
+            });
+    }
+
     /// Build Game Manager settings panel
     fn build_game_manager_settings(ui: &Ui, game: &mut Game) {
         GuiPanelBuilder::new(ui, "Game Manager Settings")
@@ -1050,6 +1085,11 @@ impl UiManager {
         // Show pause menu if in play mode and paused
         if game.game_manager.is_playing() && game.game_manager.is_paused() {
             Self::build_pause_menu(&ui, game);
+        }
+
+        // Show play mode UI when in play mode and not paused
+        if game.game_manager.is_playing() && !game.game_manager.is_paused() {
+            Self::build_play_mode_ui(&ui, game);
         }
 
         // Only show edit UI when in edit mode

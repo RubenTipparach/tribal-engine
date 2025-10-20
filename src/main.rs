@@ -12,7 +12,8 @@ mod nebula;
 mod config;
 mod scene;
 mod gizmo;
-mod ecs;  // New ECS system with 64-bit coordinates
+mod ecs;      // ECS system with 64-bit coordinates
+mod movement; // Turn-based movement system
 
 use engine::Engine;
 

@@ -45,6 +45,23 @@ pub struct Mesh {
 }
 
 impl Mesh {
+    /// Calculate axis-aligned bounding box from mesh vertices
+    pub fn calculate_bounds(&self) -> (Vec3, Vec3) {
+        if self.vertices.is_empty() {
+            return (Vec3::ZERO, Vec3::ZERO);
+        }
+
+        let mut min = self.vertices[0].position;
+        let mut max = self.vertices[0].position;
+
+        for vertex in &self.vertices {
+            min = min.min(vertex.position);
+            max = max.max(vertex.position);
+        }
+
+        (min, max)
+    }
+
     pub fn create_cube() -> Self {
         let vertices = vec![
             // Front face (Z+)

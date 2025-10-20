@@ -1,4 +1,4 @@
-use glam::{Mat4, Quat, Vec3};
+use glam::{Mat4, Quat, Vec3, Vec4};
 
 /// Free-flying camera with 6 degrees of freedom
 pub struct Camera {
@@ -181,6 +181,37 @@ impl Camera {
         self.pitch = pitch;
         self.yaw = yaw;
         self.roll = roll;
+    }
+
+    /// Convert screen coordinates to a ray in world space for picking
+    pub fn screen_to_ray(&self, screen_x: f32, screen_y: f32, viewport_width: f32, viewport_height: f32) -> (glam::DVec3, glam::DVec3) {
+        // Convert screen coordinates to NDC (-1 to 1)
+        let ndc_x = (2.0 * screen_x) / viewport_width - 1.0;
+        let ndc_y = 1.0 - (2.0 * screen_y) / viewport_height;
+
+        // Get projection and view matrices
+        let aspect = viewport_width / viewport_height;
+        let proj = self.projection_matrix(aspect);
+        let view = self.view_matrix();
+
+        // Inverse matrices
+        let inv_proj = proj.inverse();
+        let inv_view = view.inverse();
+
+        // Convert NDC to view space
+        let clip = Vec4::new(ndc_x, ndc_y, -1.0, 1.0);
+        let eye_vec = inv_proj * clip;
+        let eye = Vec4::new(eye_vec.x, eye_vec.y, -1.0, 0.0); // Direction in view space
+
+        // Convert to world space
+        let world = (inv_view * eye).truncate();
+        let ray_dir = world.normalize();
+
+        // Ray origin is camera position
+        let ray_origin = self.position.as_dvec3();
+        let ray_dir_dvec3 = ray_dir.as_dvec3().normalize();
+
+        (ray_origin, ray_dir_dvec3)
     }
 }
 

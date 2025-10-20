@@ -9,9 +9,7 @@ use crate::mesh::{Mesh, Vertex};
 use crate::material::MaterialProperties;
 use crate::core::lighting::{DirectionalLight, PointLight};
 use crate::imgui_renderer::ImGuiRenderer;
-use crate::background::{SkyboxRenderer, SkyboxUniformBufferObject};
 use crate::ui::UiManager;
-use crate::nebula::{NebulaRenderer, NebulaUniformBufferObject};
 use crate::gizmo::GizmoMesh;
 
 const MAX_FRAMES_IN_FLIGHT: usize = 2;
@@ -30,6 +28,19 @@ struct MeshPushConstants {
 
 unsafe impl bytemuck::Pod for MeshPushConstants {}
 unsafe impl bytemuck::Zeroable for MeshPushConstants {}
+
+/// Push constants for widget rendering (model, view, projection + color)
+#[repr(C)]
+#[derive(Copy, Clone)]
+struct WidgetPushConstants {
+    model: glam::Mat4,       // 64 bytes
+    view: glam::Mat4,        // 64 bytes
+    projection: glam::Mat4,  // 64 bytes
+    color: glam::Vec4,       // 16 bytes
+}
+
+unsafe impl bytemuck::Pod for WidgetPushConstants {}
+unsafe impl bytemuck::Zeroable for WidgetPushConstants {}
 
 /// Star shader uniform buffer object
 #[repr(C)]
@@ -74,10 +85,6 @@ pub struct VulkanRenderer {
     pipeline_layout: vk::PipelineLayout,
     graphics_pipeline: vk::Pipeline,
     wireframe_pipeline: vk::Pipeline,  // Wireframe rendering pipeline
-    // Skybox
-    skybox: SkyboxRenderer,
-    // Nebula
-    nebula: NebulaRenderer,
     // Gizmo - store all three mesh types
     gizmo_translate_mesh: Mesh,
     gizmo_rotate_mesh: Mesh,
@@ -113,22 +120,6 @@ pub struct VulkanRenderer {
     cube_vertex_buffer_memory: vk::DeviceMemory,
     cube_index_buffer: vk::Buffer,
     cube_index_buffer_memory: vk::DeviceMemory,
-    // Mesh registry for sphere objects (stars, planets, etc.)
-    sphere_mesh: Mesh,
-    sphere_vertex_buffer: vk::Buffer,
-    sphere_vertex_buffer_memory: vk::DeviceMemory,
-    sphere_index_buffer: vk::Buffer,
-    sphere_index_buffer_memory: vk::DeviceMemory,
-    // Star shader pipeline and resources
-    star_descriptor_set_layout: vk::DescriptorSetLayout,
-    star_pipeline_layout: vk::PipelineLayout,
-    star_pipeline: vk::Pipeline,
-    star_uniform_buffers: Vec<vk::Buffer>,
-    star_uniform_buffers_memory: Vec<vk::DeviceMemory>,
-    star_descriptor_pool: vk::DescriptorPool,
-    star_descriptor_sets: Vec<vk::DescriptorSet>,
-    // Other star shader pipeline (alternative fiery shader)
-    other_star_pipeline: vk::Pipeline,
     // Custom mesh storage (path -> (mesh, vertex_buffer, index_buffer, memories))
     custom_meshes: std::collections::HashMap<String, (Mesh, vk::Buffer, vk::DeviceMemory, vk::Buffer, vk::DeviceMemory)>,
     // Directional light visualization
@@ -189,6 +180,8 @@ pub struct VulkanRenderer {
     imgui_context: Context,
     imgui_renderer: ImGuiRenderer,
     imgui_platform: imgui_winit_support::WinitPlatform,
+    // Render pass plugin system
+    render_passes: crate::core::RenderPassRegistry,
 }
 
 #[repr(C)]
@@ -496,59 +489,6 @@ impl VulkanRenderer {
                 &cube_mesh.indices,
             )?;
 
-            // Create sphere mesh (will be used for star/planet objects)
-            let sphere_mesh = Mesh::create_sphere(1.0, 64, 32);  // High detail sphere
-
-            // Create sphere vertex buffer
-            let (sphere_vertex_buffer, sphere_vertex_buffer_memory) = Self::create_vertex_buffer(
-                &instance,
-                physical_device,
-                &device,
-                command_pool,
-                graphics_queue,
-                &sphere_mesh.vertices,
-            )?;
-
-            // Create sphere index buffer
-            let (sphere_index_buffer, sphere_index_buffer_memory) = Self::create_index_buffer(
-                &instance,
-                physical_device,
-                &device,
-                command_pool,
-                graphics_queue,
-                &sphere_mesh.indices,
-            )?;
-
-            // Create star shader pipeline and resources
-            let star_descriptor_set_layout = Self::create_star_descriptor_set_layout(&device)?;
-            let (star_pipeline_layout, star_pipeline) =
-                Self::create_star_pipeline(&device, swapchain_extent, render_pass, star_descriptor_set_layout)?;
-
-            // Create other_star pipeline (uses same layout and descriptor sets as star)
-            let other_star_pipeline = Self::create_other_star_pipeline(
-                &device,
-                swapchain_extent,
-                render_pass,
-                star_descriptor_set_layout,
-                star_pipeline_layout
-            )?;
-
-            let (star_uniform_buffers, star_uniform_buffers_memory) = Self::create_star_uniform_buffers(
-                &instance,
-                physical_device,
-                &device,
-                MAX_FRAMES_IN_FLIGHT,
-            )?;
-
-            let star_descriptor_pool = Self::create_star_descriptor_pool(&device, MAX_FRAMES_IN_FLIGHT)?;
-            let star_descriptor_sets = Self::create_star_descriptor_sets(
-                &device,
-                star_descriptor_pool,
-                star_descriptor_set_layout,
-                &star_uniform_buffers,
-                MAX_FRAMES_IN_FLIGHT,
-            )?;
-
             // Legacy: keep old mesh references for compatibility
             let mesh = cube_mesh.clone();
             let vertex_buffer = cube_vertex_buffer;
@@ -575,100 +515,6 @@ impl VulkanRenderer {
                 ssao_sampler,
                 MAX_FRAMES_IN_FLIGHT,
             )?;
-            
-            // Create skybox
-            let skybox = {
-                let skybox_mesh = Mesh::create_inverted_sphere(50.0, 32, 16);
-                
-                let (skybox_vertex_buffer, skybox_vertex_buffer_memory) = Self::create_vertex_buffer(
-                    &instance,
-                    physical_device,
-                    &device,
-                    command_pool,
-                    graphics_queue,
-                    &skybox_mesh.vertices,
-                )?;
-                
-                let (skybox_index_buffer, skybox_index_buffer_memory) = Self::create_index_buffer(
-                    &instance,
-                    physical_device,
-                    &device,
-                    command_pool,
-                    graphics_queue,
-                    &skybox_mesh.indices,
-                )?;
-                
-                let skybox_descriptor_set_layout = Self::create_descriptor_set_layout(&device)?;
-                let (skybox_pipeline_layout, skybox_pipeline) =
-                Self::create_skybox_pipeline(&device, swapchain_extent, render_pass, skybox_descriptor_set_layout)?;
-                
-                let (skybox_uniform_buffers, skybox_uniform_buffers_memory) = Self::create_skybox_uniform_buffers(
-                    &instance,
-                    physical_device,
-                    &device,
-                    MAX_FRAMES_IN_FLIGHT,
-                )?;
-                
-                let skybox_descriptor_pool = Self::create_descriptor_pool(&device, MAX_FRAMES_IN_FLIGHT)?;
-                let skybox_descriptor_sets = Self::create_skybox_descriptor_sets(
-                    &device,
-                    skybox_descriptor_pool,
-                    skybox_descriptor_set_layout,
-                    &skybox_uniform_buffers,
-                    MAX_FRAMES_IN_FLIGHT,
-                )?;
-                
-                SkyboxRenderer {
-                    mesh: skybox_mesh,
-                    vertex_buffer: skybox_vertex_buffer,
-                    vertex_buffer_memory: skybox_vertex_buffer_memory,
-                    index_buffer: skybox_index_buffer,
-                    index_buffer_memory: skybox_index_buffer_memory,
-                    descriptor_set_layout: skybox_descriptor_set_layout,
-                    pipeline_layout: skybox_pipeline_layout,
-                    pipeline: skybox_pipeline,
-                    uniform_buffers: skybox_uniform_buffers,
-                    uniform_buffers_memory: skybox_uniform_buffers_memory,
-                    descriptor_pool: skybox_descriptor_pool,
-                    descriptor_sets: skybox_descriptor_sets,
-                }
-            };
-            
-            // Create nebula
-            let nebula = {
-                let nebula_descriptor_set_layout = Self::create_nebula_descriptor_set_layout(&device)?;
-                let (nebula_pipeline_layout, nebula_pipeline) =
-                Self::create_nebula_pipeline(&device, swapchain_extent, render_pass, nebula_descriptor_set_layout)?;
-                
-                let (nebula_uniform_buffers, nebula_uniform_buffers_memory) = Self::create_nebula_uniform_buffers(
-                    &instance,
-                    physical_device,
-                    &device,
-                    MAX_FRAMES_IN_FLIGHT,
-                )?;
-                
-                let nebula_descriptor_pool = Self::create_nebula_descriptor_pool(&device, MAX_FRAMES_IN_FLIGHT)?;
-                let nebula_descriptor_sets = Self::create_nebula_descriptor_sets(
-                    &device,
-                    nebula_descriptor_pool,
-                    nebula_descriptor_set_layout,
-                    &nebula_uniform_buffers,
-                    depth_image_view,
-                    depth_sampler,
-                    MAX_FRAMES_IN_FLIGHT,
-                )?;
-                
-                NebulaRenderer {
-                    descriptor_set_layout: nebula_descriptor_set_layout,
-                    pipeline_layout: nebula_pipeline_layout,
-                    pipeline: nebula_pipeline,
-                    uniform_buffers: nebula_uniform_buffers,
-                    uniform_buffers_memory: nebula_uniform_buffers_memory,
-                    descriptor_pool: nebula_descriptor_pool,
-                    descriptor_sets: nebula_descriptor_sets,
-                }
-            };
-
             // Create all three gizmo meshes
             let (translate_vertices, translate_indices) = GizmoMesh::generate_translate_arrows();
             let gizmo_translate_mesh = Mesh {
@@ -777,6 +623,7 @@ impl VulkanRenderer {
                 MAX_FRAMES_IN_FLIGHT,
             )?;
 
+
             // Create command buffers
             let command_buffers = Self::create_command_buffers(&device, command_pool, MAX_FRAMES_IN_FLIGHT)?;
             
@@ -856,7 +703,33 @@ impl VulkanRenderer {
                 graphics_queue,
                 swapchain_extent,
             )?;
-            
+
+            // Initialize render pass plugin system
+            let mut render_passes = crate::core::RenderPassRegistry::new();
+
+            // Register passes
+            render_passes.register(Box::new(crate::core::passes::SkyboxPass::new()));
+            render_passes.register(Box::new(crate::core::passes::NebulaPass::new()));
+            render_passes.register(Box::new(crate::core::passes::MeshPass::new()));
+            render_passes.register(Box::new(crate::core::passes::StarPass::new(MAX_FRAMES_IN_FLIGHT)));
+
+            // Initialize all passes
+            let ctx = crate::core::RenderContext {
+                device: &device,
+                instance: &instance,
+                physical_device,
+                command_pool,
+                graphics_queue,
+                extent: swapchain_extent,
+                depth_image_view: Some(depth_image_view),
+                depth_sampler: Some(depth_sampler),
+                mesh_pipeline: Some(graphics_pipeline),
+                mesh_pipeline_layout: Some(pipeline_layout),
+                mesh_descriptor_sets: Some(&descriptor_sets),
+                custom_meshes: None,  // No meshes loaded yet at initialization
+            };
+            render_passes.initialize_all(&ctx, render_pass, swapchain_extent)?;
+
             Ok(Self {
                 _entry: entry,
                 instance,
@@ -878,8 +751,6 @@ impl VulkanRenderer {
                 pipeline_layout,
                 graphics_pipeline,
                 wireframe_pipeline,
-                skybox,
-                nebula,
                 gizmo_translate_mesh,
                 gizmo_rotate_mesh,
                 gizmo_scale_mesh,
@@ -913,19 +784,6 @@ impl VulkanRenderer {
                 cube_vertex_buffer_memory,
                 cube_index_buffer,
                 cube_index_buffer_memory,
-                sphere_mesh,
-                sphere_vertex_buffer,
-                sphere_vertex_buffer_memory,
-                sphere_index_buffer,
-                sphere_index_buffer_memory,
-                star_descriptor_set_layout,
-                star_pipeline_layout,
-                star_pipeline,
-                star_uniform_buffers,
-                star_uniform_buffers_memory,
-                star_descriptor_pool,
-                star_descriptor_sets,
-                other_star_pipeline,
                 custom_meshes: std::collections::HashMap::new(),
                 dir_light_mesh,
                 dir_light_vertex_buffer,
@@ -980,6 +838,7 @@ impl VulkanRenderer {
                 imgui_context,
                 imgui_renderer,
                 imgui_platform,
+                render_passes,
             })
         }
     }
@@ -1891,121 +1750,6 @@ impl VulkanRenderer {
             Ok(device.create_shader_module(&create_info, None)?)
         }
         
-        unsafe fn create_skybox_pipeline(
-            device: &ash::Device,
-            extent: vk::Extent2D,
-            render_pass: vk::RenderPass,
-            descriptor_set_layout: vk::DescriptorSetLayout,
-        ) -> anyhow::Result<(vk::PipelineLayout, vk::Pipeline)> {
-            let vert_shader_code = include_bytes!("../../shaders/skybox.vert.spv");
-            let frag_shader_code = include_bytes!("../../shaders/skybox_starry.frag.spv");
-
-            let vert_shader_module = Self::create_shader_module(device, vert_shader_code)?;
-            let frag_shader_module = Self::create_shader_module(device, frag_shader_code)?;
-            
-            let entry_point = CString::new("main")?;
-            
-            let vert_stage_info = vk::PipelineShaderStageCreateInfo::default()
-            .stage(vk::ShaderStageFlags::VERTEX)
-            .module(vert_shader_module)
-            .name(&entry_point);
-            
-            let frag_stage_info = vk::PipelineShaderStageCreateInfo::default()
-            .stage(vk::ShaderStageFlags::FRAGMENT)
-            .module(frag_shader_module)
-            .name(&entry_point);
-            
-            let shader_stages = [vert_stage_info, frag_stage_info];
-            
-            // Vertex input for skybox mesh
-            let binding_desc = Vertex::get_binding_description();
-            let attribute_desc = Vertex::get_attribute_descriptions();
-            
-            let vertex_input_info = vk::PipelineVertexInputStateCreateInfo::default()
-            .vertex_binding_descriptions(std::slice::from_ref(&binding_desc))
-            .vertex_attribute_descriptions(&attribute_desc);
-            
-            let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
-            .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
-            .primitive_restart_enable(false);
-            
-            let viewport = vk::Viewport {
-                x: 0.0,
-                y: 0.0,
-                width: extent.width as f32,
-                height: extent.height as f32,
-                min_depth: 0.0,
-                max_depth: 1.0,
-            };
-            
-            let scissor = vk::Rect2D {
-                offset: vk::Offset2D { x: 0, y: 0 },
-                extent,
-            };
-            
-            let viewport_state = vk::PipelineViewportStateCreateInfo::default()
-            .viewports(std::slice::from_ref(&viewport))
-            .scissors(std::slice::from_ref(&scissor));
-            
-            let rasterizer = vk::PipelineRasterizationStateCreateInfo::default()
-            .depth_clamp_enable(false)
-            .rasterizer_discard_enable(false)
-            .polygon_mode(vk::PolygonMode::FILL)
-            .line_width(1.0)
-            .cull_mode(vk::CullModeFlags::FRONT) // Cull front faces for inverted sphere
-            .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
-            .depth_bias_enable(false);
-            
-            let multisampling = vk::PipelineMultisampleStateCreateInfo::default()
-            .sample_shading_enable(false)
-            .rasterization_samples(vk::SampleCountFlags::TYPE_1);
-            
-            // Depth test but no depth write - skybox is furthest
-            let depth_stencil = vk::PipelineDepthStencilStateCreateInfo::default()
-            .depth_test_enable(true)
-            .depth_write_enable(false)
-            .depth_compare_op(vk::CompareOp::LESS_OR_EQUAL);
-            
-            // No blending for skybox - it's opaque
-            let color_blend_attachment = vk::PipelineColorBlendAttachmentState::default()
-            .color_write_mask(vk::ColorComponentFlags::RGBA)
-            .blend_enable(false);
-            
-            let color_blending = vk::PipelineColorBlendStateCreateInfo::default()
-            .logic_op_enable(false)
-            .attachments(std::slice::from_ref(&color_blend_attachment));
-            
-            let set_layouts = [descriptor_set_layout];
-            let pipeline_layout_info = vk::PipelineLayoutCreateInfo::default()
-            .set_layouts(&set_layouts);
-            
-            let pipeline_layout = device.create_pipeline_layout(&pipeline_layout_info, None)?;
-            
-            let pipeline_info = vk::GraphicsPipelineCreateInfo::default()
-            .stages(&shader_stages)
-            .vertex_input_state(&vertex_input_info)
-            .input_assembly_state(&input_assembly)
-            .viewport_state(&viewport_state)
-            .rasterization_state(&rasterizer)
-            .multisample_state(&multisampling)
-            .depth_stencil_state(&depth_stencil)
-            .color_blend_state(&color_blending)
-            .layout(pipeline_layout)
-            .render_pass(render_pass)
-            .subpass(0);
-            
-            let pipelines = device.create_graphics_pipelines(
-                vk::PipelineCache::null(),
-                std::slice::from_ref(&pipeline_info),
-                None,
-            ).map_err(|e| anyhow::anyhow!("Failed to create skybox pipeline: {:?}", e.1))?;
-            
-            device.destroy_shader_module(vert_shader_module, None);
-            device.destroy_shader_module(frag_shader_module, None);
-            
-            Ok((pipeline_layout, pipelines[0]))
-        }
-
         unsafe fn create_gizmo_pipeline(
             device: &ash::Device,
             extent: vk::Extent2D,
@@ -2124,145 +1868,6 @@ impl VulkanRenderer {
             device.destroy_shader_module(vert_shader_module, None);
             device.destroy_shader_module(frag_shader_module, None);
 
-            Ok((pipeline_layout, pipelines[0]))
-        }
-
-        unsafe fn create_nebula_descriptor_set_layout(device: &ash::Device) -> anyhow::Result<vk::DescriptorSetLayout> {
-            // Binding 0: Uniform buffer
-            let ubo_binding = vk::DescriptorSetLayoutBinding::default()
-                .binding(0)
-                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT);
-
-            // Binding 1: Depth texture sampler
-            let depth_sampler_binding = vk::DescriptorSetLayoutBinding::default()
-                .binding(1)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::FRAGMENT);
-
-            let bindings = [ubo_binding, depth_sampler_binding];
-            let create_info = vk::DescriptorSetLayoutCreateInfo::default()
-                .bindings(&bindings);
-
-            Ok(device.create_descriptor_set_layout(&create_info, None)?)
-        }
-
-        unsafe fn create_nebula_pipeline(
-            device: &ash::Device,
-            extent: vk::Extent2D,
-            render_pass: vk::RenderPass,
-            descriptor_set_layout: vk::DescriptorSetLayout,
-        ) -> anyhow::Result<(vk::PipelineLayout, vk::Pipeline)> {
-            let vert_shader_code = include_bytes!("../../shaders/nebula.vert.spv");
-            let frag_shader_code = include_bytes!("../../shaders/nebula.frag.spv");
-            
-            let vert_shader_module = Self::create_shader_module(device, vert_shader_code)?;
-            let frag_shader_module = Self::create_shader_module(device, frag_shader_code)?;
-            
-            let entry_point = CString::new("main")?;
-            
-            let vert_stage_info = vk::PipelineShaderStageCreateInfo::default()
-            .stage(vk::ShaderStageFlags::VERTEX)
-            .module(vert_shader_module)
-            .name(&entry_point);
-            
-            let frag_stage_info = vk::PipelineShaderStageCreateInfo::default()
-            .stage(vk::ShaderStageFlags::FRAGMENT)
-            .module(frag_shader_module)
-            .name(&entry_point);
-            
-            let shader_stages = [vert_stage_info, frag_stage_info];
-            
-            // No vertex input - fullscreen triangle generated in vertex shader
-            let vertex_input_info = vk::PipelineVertexInputStateCreateInfo::default();
-            
-            let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
-            .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
-            .primitive_restart_enable(false);
-            
-            let viewport = vk::Viewport {
-                x: 0.0,
-                y: 0.0,
-                width: extent.width as f32,
-                height: extent.height as f32,
-                min_depth: 0.0,
-                max_depth: 1.0,
-            };
-            
-            let scissor = vk::Rect2D {
-                offset: vk::Offset2D { x: 0, y: 0 },
-                extent,
-            };
-            
-            let viewport_state = vk::PipelineViewportStateCreateInfo::default()
-            .viewports(std::slice::from_ref(&viewport))
-            .scissors(std::slice::from_ref(&scissor));
-            
-            let rasterizer = vk::PipelineRasterizationStateCreateInfo::default()
-            .depth_clamp_enable(false)
-            .rasterizer_discard_enable(false)
-            .polygon_mode(vk::PolygonMode::FILL)
-            .line_width(1.0)
-            .cull_mode(vk::CullModeFlags::NONE)
-            .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
-            .depth_bias_enable(false);
-            
-            let multisampling = vk::PipelineMultisampleStateCreateInfo::default()
-            .sample_shading_enable(false)
-            .rasterization_samples(vk::SampleCountFlags::TYPE_1);
-            
-            // Depth test disabled - nebula is a fullscreen effect that blends over everything
-            // The fragment shader reads the depth buffer to modulate opacity based on distance
-            let depth_stencil = vk::PipelineDepthStencilStateCreateInfo::default()
-            .depth_test_enable(false)
-            .depth_write_enable(false)
-            .depth_compare_op(vk::CompareOp::ALWAYS);
-            
-            // Alpha blending for nebula transparency
-            let color_blend_attachment = vk::PipelineColorBlendAttachmentState::default()
-            .color_write_mask(vk::ColorComponentFlags::RGBA)
-            .blend_enable(true)
-            .src_color_blend_factor(vk::BlendFactor::SRC_ALPHA)
-            .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
-            .color_blend_op(vk::BlendOp::ADD)
-            .src_alpha_blend_factor(vk::BlendFactor::ONE)
-            .dst_alpha_blend_factor(vk::BlendFactor::ZERO)
-            .alpha_blend_op(vk::BlendOp::ADD);
-            
-            let color_blending = vk::PipelineColorBlendStateCreateInfo::default()
-            .logic_op_enable(false)
-            .attachments(std::slice::from_ref(&color_blend_attachment));
-            
-            let set_layouts = [descriptor_set_layout];
-            let pipeline_layout_info = vk::PipelineLayoutCreateInfo::default()
-            .set_layouts(&set_layouts);
-            
-            let pipeline_layout = device.create_pipeline_layout(&pipeline_layout_info, None)?;
-            
-            let pipeline_info = vk::GraphicsPipelineCreateInfo::default()
-            .stages(&shader_stages)
-            .vertex_input_state(&vertex_input_info)
-            .input_assembly_state(&input_assembly)
-            .viewport_state(&viewport_state)
-            .rasterization_state(&rasterizer)
-            .multisample_state(&multisampling)
-            .depth_stencil_state(&depth_stencil)
-            .color_blend_state(&color_blending)
-            .layout(pipeline_layout)
-            .render_pass(render_pass)
-            .subpass(0);
-            
-            let pipelines = device.create_graphics_pipelines(
-                vk::PipelineCache::null(),
-                std::slice::from_ref(&pipeline_info),
-                None,
-            ).map_err(|e| anyhow::anyhow!("Failed to create nebula pipeline: {:?}", e.1))?;
-            
-            device.destroy_shader_module(vert_shader_module, None);
-            device.destroy_shader_module(frag_shader_module, None);
-            
             Ok((pipeline_layout, pipelines[0]))
         }
 
@@ -2407,141 +2012,6 @@ impl VulkanRenderer {
             Ok((pipeline_layout, pipelines[0]))
         }
 
-        unsafe fn create_other_star_pipeline(
-            device: &ash::Device,
-            extent: vk::Extent2D,
-            render_pass: vk::RenderPass,
-            descriptor_set_layout: vk::DescriptorSetLayout,
-            pipeline_layout: vk::PipelineLayout,
-        ) -> anyhow::Result<vk::Pipeline> {
-            let vert_shader_code = include_bytes!("../../shaders/other_star.vert.spv");
-            let frag_shader_code = include_bytes!("../../shaders/other_star.frag.spv");
-
-            let vert_shader_module = Self::create_shader_module(device, vert_shader_code)?;
-            let frag_shader_module = Self::create_shader_module(device, frag_shader_code)?;
-
-            let entry_point = CString::new("main")?;
-
-            let vert_stage_info = vk::PipelineShaderStageCreateInfo::default()
-                .stage(vk::ShaderStageFlags::VERTEX)
-                .module(vert_shader_module)
-                .name(&entry_point);
-
-            let frag_stage_info = vk::PipelineShaderStageCreateInfo::default()
-                .stage(vk::ShaderStageFlags::FRAGMENT)
-                .module(frag_shader_module)
-                .name(&entry_point);
-
-            let shader_stages = [vert_stage_info, frag_stage_info];
-
-            // Vertex input: position, normal, uv (same as regular meshes)
-            let binding_description = vk::VertexInputBindingDescription::default()
-                .binding(0)
-                .stride(std::mem::size_of::<Vertex>() as u32)
-                .input_rate(vk::VertexInputRate::VERTEX);
-
-            let attribute_descriptions = [
-                vk::VertexInputAttributeDescription::default()
-                    .binding(0)
-                    .location(0)
-                    .format(vk::Format::R32G32B32_SFLOAT)
-                    .offset(0),
-                vk::VertexInputAttributeDescription::default()
-                    .binding(0)
-                    .location(1)
-                    .format(vk::Format::R32G32B32_SFLOAT)
-                    .offset(12),
-                vk::VertexInputAttributeDescription::default()
-                    .binding(0)
-                    .location(2)
-                    .format(vk::Format::R32G32_SFLOAT)
-                    .offset(24),
-            ];
-
-            let vertex_input_info = vk::PipelineVertexInputStateCreateInfo::default()
-                .vertex_binding_descriptions(std::slice::from_ref(&binding_description))
-                .vertex_attribute_descriptions(&attribute_descriptions);
-
-            let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
-                .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
-                .primitive_restart_enable(false);
-
-            let viewport = vk::Viewport {
-                x: 0.0,
-                y: 0.0,
-                width: extent.width as f32,
-                height: extent.height as f32,
-                min_depth: 0.0,
-                max_depth: 1.0,
-            };
-
-            let scissor = vk::Rect2D {
-                offset: vk::Offset2D { x: 0, y: 0 },
-                extent,
-            };
-
-            let viewport_state = vk::PipelineViewportStateCreateInfo::default()
-                .viewports(std::slice::from_ref(&viewport))
-                .scissors(std::slice::from_ref(&scissor));
-
-            let rasterizer = vk::PipelineRasterizationStateCreateInfo::default()
-                .depth_clamp_enable(false)
-                .rasterizer_discard_enable(false)
-                .polygon_mode(vk::PolygonMode::FILL)
-                .line_width(1.0)
-                .cull_mode(vk::CullModeFlags::BACK)
-                .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
-                .depth_bias_enable(false);
-
-            let multisampling = vk::PipelineMultisampleStateCreateInfo::default()
-                .sample_shading_enable(false)
-                .rasterization_samples(vk::SampleCountFlags::TYPE_1);
-
-            // Depth testing for stars with unified projection
-            let depth_stencil = vk::PipelineDepthStencilStateCreateInfo::default()
-                .depth_test_enable(true)
-                .depth_write_enable(true)
-                .depth_compare_op(vk::CompareOp::LESS);
-
-            // Additive blending for star glow
-            let color_blend_attachment = vk::PipelineColorBlendAttachmentState::default()
-                .color_write_mask(vk::ColorComponentFlags::RGBA)
-                .blend_enable(true)
-                .src_color_blend_factor(vk::BlendFactor::ONE)
-                .dst_color_blend_factor(vk::BlendFactor::ONE)
-                .color_blend_op(vk::BlendOp::ADD)
-                .src_alpha_blend_factor(vk::BlendFactor::ONE)
-                .dst_alpha_blend_factor(vk::BlendFactor::ZERO)
-                .alpha_blend_op(vk::BlendOp::ADD);
-
-            let color_blending = vk::PipelineColorBlendStateCreateInfo::default()
-                .logic_op_enable(false)
-                .attachments(std::slice::from_ref(&color_blend_attachment));
-
-            let pipeline_info = vk::GraphicsPipelineCreateInfo::default()
-                .stages(&shader_stages)
-                .vertex_input_state(&vertex_input_info)
-                .input_assembly_state(&input_assembly)
-                .viewport_state(&viewport_state)
-                .rasterization_state(&rasterizer)
-                .multisample_state(&multisampling)
-                .depth_stencil_state(&depth_stencil)
-                .color_blend_state(&color_blending)
-                .layout(pipeline_layout)
-                .render_pass(render_pass)
-                .subpass(0);
-
-            let pipelines = device.create_graphics_pipelines(
-                vk::PipelineCache::null(),
-                std::slice::from_ref(&pipeline_info),
-                None,
-            ).map_err(|e| anyhow::anyhow!("Failed to create other_star pipeline: {:?}", e.1))?;
-
-            device.destroy_shader_module(vert_shader_module, None);
-            device.destroy_shader_module(frag_shader_module, None);
-
-            Ok(pipelines[0])
-        }
 
         unsafe fn create_framebuffers(
             device: &ash::Device,
@@ -2673,16 +2143,20 @@ impl VulkanRenderer {
         }
 
         /// Load a custom mesh from OBJ file and create GPU buffers
-        pub unsafe fn load_custom_mesh(&mut self, path: &str) -> anyhow::Result<()> {
+        /// Returns the calculated bounds (min, max) of the mesh
+        pub unsafe fn load_custom_mesh(&mut self, path: &str) -> anyhow::Result<(glam::Vec3, glam::Vec3)> {
             // Check if already loaded
-            if self.custom_meshes.contains_key(path) {
-                return Ok(());
+            if let Some((mesh, _, _, _, _)) = self.custom_meshes.get(path) {
+                return Ok(mesh.calculate_bounds());
             }
 
             println!("Loading custom mesh: {}", path);
 
             // Load mesh from file
             let mesh = Mesh::from_obj(path)?;
+
+            // Calculate bounds before moving mesh
+            let bounds = mesh.calculate_bounds();
 
             // Create vertex buffer
             let (vertex_buffer, vertex_memory) = Self::create_vertex_buffer(
@@ -2710,8 +2184,8 @@ impl VulkanRenderer {
                 (mesh, vertex_buffer, vertex_memory, index_buffer, index_memory),
             );
 
-            println!("Custom mesh loaded successfully: {}", path);
-            Ok(())
+            println!("Custom mesh loaded successfully: {} (bounds: {:?} to {:?})", path, bounds.0, bounds.1);
+            Ok(bounds)
         }
 
         unsafe fn create_uniform_buffers(
@@ -2740,61 +2214,6 @@ impl VulkanRenderer {
             
             Ok((buffers, memories))
         }
-        
-        unsafe fn create_skybox_uniform_buffers(
-            instance: &ash::Instance,
-            physical_device: vk::PhysicalDevice,
-            device: &ash::Device,
-            count: usize,
-        ) -> anyhow::Result<(Vec<vk::Buffer>, Vec<vk::DeviceMemory>)> {
-            let buffer_size = std::mem::size_of::<SkyboxUniformBufferObject>() as vk::DeviceSize;
-            
-            let mut buffers = vec![];
-            let mut memories = vec![];
-            
-            for _ in 0..count {
-                let (buffer, memory) = Self::create_buffer(
-                    instance,
-                    physical_device,
-                    device,
-                    buffer_size,
-                    vk::BufferUsageFlags::UNIFORM_BUFFER,
-                    vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
-                )?;
-                buffers.push(buffer);
-                memories.push(memory);
-            }
-            
-            Ok((buffers, memories))
-        }
-        
-        unsafe fn create_nebula_uniform_buffers(
-            instance: &ash::Instance,
-            physical_device: vk::PhysicalDevice,
-            device: &ash::Device,
-            count: usize,
-        ) -> anyhow::Result<(Vec<vk::Buffer>, Vec<vk::DeviceMemory>)> {
-            let buffer_size = std::mem::size_of::<NebulaUniformBufferObject>() as vk::DeviceSize;
-            
-            let mut buffers = vec![];
-            let mut memories = vec![];
-            
-            for _ in 0..count {
-                let (buffer, memory) = Self::create_buffer(
-                    instance,
-                    physical_device,
-                    device,
-                    buffer_size,
-                    vk::BufferUsageFlags::UNIFORM_BUFFER,
-                    vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
-                )?;
-                buffers.push(buffer);
-                memories.push(memory);
-            }
-            
-            Ok((buffers, memories))
-        }
-
         unsafe fn create_star_uniform_buffers(
             instance: &ash::Instance,
             physical_device: vk::PhysicalDevice,
@@ -2962,27 +2381,6 @@ impl VulkanRenderer {
 
             Ok(device.create_descriptor_pool(&create_info, None)?)
         }
-
-        unsafe fn create_nebula_descriptor_pool(
-            device: &ash::Device,
-            count: usize,
-        ) -> anyhow::Result<vk::DescriptorPool> {
-            let pool_sizes = [
-                vk::DescriptorPoolSize::default()
-                    .ty(vk::DescriptorType::UNIFORM_BUFFER)
-                    .descriptor_count(count as u32),
-                vk::DescriptorPoolSize::default()
-                    .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                    .descriptor_count(count as u32),
-            ];
-
-            let create_info = vk::DescriptorPoolCreateInfo::default()
-                .pool_sizes(&pool_sizes)
-                .max_sets(count as u32);
-
-            Ok(device.create_descriptor_pool(&create_info, None)?)
-        }
-        
         unsafe fn create_descriptor_sets(
             device: &ash::Device,
             pool: vk::DescriptorPool,
@@ -3030,90 +2428,6 @@ impl VulkanRenderer {
 
             Ok(descriptor_sets)
         }
-
-        unsafe fn create_skybox_descriptor_sets(
-            device: &ash::Device,
-            pool: vk::DescriptorPool,
-            layout: vk::DescriptorSetLayout,
-            buffers: &[vk::Buffer],
-            count: usize,
-        ) -> anyhow::Result<Vec<vk::DescriptorSet>> {
-            let layouts = vec![layout; count];
-            let alloc_info = vk::DescriptorSetAllocateInfo::default()
-            .descriptor_pool(pool)
-            .set_layouts(&layouts);
-
-            let descriptor_sets = device.allocate_descriptor_sets(&alloc_info)?;
-
-            for (i, &descriptor_set) in descriptor_sets.iter().enumerate() {
-                let buffer_info = vk::DescriptorBufferInfo::default()
-                .buffer(buffers[i])
-                .offset(0)
-                .range(std::mem::size_of::<SkyboxUniformBufferObject>() as vk::DeviceSize);
-
-                let descriptor_write = vk::WriteDescriptorSet::default()
-                .dst_set(descriptor_set)
-                .dst_binding(0)
-                .dst_array_element(0)
-                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                .buffer_info(std::slice::from_ref(&buffer_info));
-
-                device.update_descriptor_sets(std::slice::from_ref(&descriptor_write), &[]);
-            }
-
-            Ok(descriptor_sets)
-        }
-
-        unsafe fn create_nebula_descriptor_sets(
-            device: &ash::Device,
-            pool: vk::DescriptorPool,
-            layout: vk::DescriptorSetLayout,
-            buffers: &[vk::Buffer],
-            depth_image_view: vk::ImageView,
-            depth_sampler: vk::Sampler,
-            count: usize,
-        ) -> anyhow::Result<Vec<vk::DescriptorSet>> {
-            let layouts = vec![layout; count];
-            let alloc_info = vk::DescriptorSetAllocateInfo::default()
-                .descriptor_pool(pool)
-                .set_layouts(&layouts);
-
-            let descriptor_sets = device.allocate_descriptor_sets(&alloc_info)?;
-
-            for (i, &descriptor_set) in descriptor_sets.iter().enumerate() {
-                // Binding 0: Uniform buffer
-                let buffer_info = vk::DescriptorBufferInfo::default()
-                    .buffer(buffers[i])
-                    .offset(0)
-                    .range(std::mem::size_of::<crate::nebula::NebulaUniformBufferObject>() as vk::DeviceSize);
-
-                let buffer_write = vk::WriteDescriptorSet::default()
-                    .dst_set(descriptor_set)
-                    .dst_binding(0)
-                    .dst_array_element(0)
-                    .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                    .buffer_info(std::slice::from_ref(&buffer_info));
-
-                // Binding 1: Depth texture sampler
-                let image_info = vk::DescriptorImageInfo::default()
-                    .image_layout(vk::ImageLayout::DEPTH_STENCIL_READ_ONLY_OPTIMAL)
-                    .image_view(depth_image_view)
-                    .sampler(depth_sampler);
-
-                let image_write = vk::WriteDescriptorSet::default()
-                    .dst_set(descriptor_set)
-                    .dst_binding(1)
-                    .dst_array_element(0)
-                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                    .image_info(std::slice::from_ref(&image_info));
-
-                let descriptor_writes = [buffer_write, image_write];
-                device.update_descriptor_sets(&descriptor_writes, &[]);
-            }
-
-            Ok(descriptor_sets)
-        }
-
         unsafe fn create_star_descriptor_pool(
             device: &ash::Device,
             count: usize,
@@ -3597,105 +2911,6 @@ impl VulkanRenderer {
             
             Ok(())
         }
-        
-        unsafe fn update_skybox_uniform_buffer(&mut self, image_index: usize, game: &crate::game::Game) -> anyhow::Result<()> {
-            let view = game.get_view_matrix();
-
-            // CRITICAL: Use the EXACT SAME projection matrix as everything else!
-            let aspect = self.swapchain_extent.width as f32 / self.swapchain_extent.height as f32;
-            let proj = game.camera.projection_matrix(aspect);
-            
-            let ubo = SkyboxRenderer::create_ubo(view, proj, game.get_camera_position(), &game.skybox_config);
-            
-            let data = self.device.map_memory(
-                self.skybox.uniform_buffers_memory[image_index],
-                0,
-                std::mem::size_of::<SkyboxUniformBufferObject>() as vk::DeviceSize,
-                vk::MemoryMapFlags::empty(),
-            )?;
-            std::ptr::copy_nonoverlapping(&ubo, data as *mut SkyboxUniformBufferObject, 1);
-            self.device.unmap_memory(self.skybox.uniform_buffers_memory[image_index]);
-            
-            Ok(())
-        }
-        
-        unsafe fn update_nebula_uniform_buffer(&mut self, image_index: usize, game: &crate::game::Game) -> anyhow::Result<()> {
-            let time = game.get_time();
-            let resolution = glam::Vec2::new(
-                self.swapchain_extent.width as f32,
-                self.swapchain_extent.height as f32,
-            );
-            let mouse = glam::Vec2::ZERO; // No mouse interaction for now
-
-            let view = game.get_view_matrix();
-            let view_pos = game.get_camera_position();
-
-            // CRITICAL: Use the EXACT SAME projection matrix as everything else!
-            let aspect = self.swapchain_extent.width as f32 / self.swapchain_extent.height as f32;
-            let proj = game.camera.projection_matrix(aspect);
-
-            // Get nebula transform from ECS
-            let model = game.get_nebula_model_matrix();
-
-            let ubo = NebulaRenderer::create_ubo(time, resolution, mouse, view, proj, view_pos, &game.nebula_config, model);
-            
-            let data = self.device.map_memory(
-                self.nebula.uniform_buffers_memory[image_index],
-                0,
-                std::mem::size_of::<NebulaUniformBufferObject>() as vk::DeviceSize,
-                vk::MemoryMapFlags::empty(),
-            )?;
-            std::ptr::copy_nonoverlapping(&ubo, data as *mut NebulaUniformBufferObject, 1);
-            self.device.unmap_memory(self.nebula.uniform_buffers_memory[image_index]);
-            
-            Ok(())
-        }
-
-        unsafe fn update_star_uniform_buffer(&mut self, game: &crate::game::Game, model: Mat4) -> anyhow::Result<()> {
-            let time = game.get_time();
-            let view = game.get_view_matrix();
-            let view_pos = game.get_camera_position();
-
-            let aspect = self.swapchain_extent.width as f32 / self.swapchain_extent.height as f32;
-            // Use same projection as all other objects for unified depth buffer
-            let proj = game.camera.projection_matrix(aspect);
-
-            // Star shader parameters from config
-            let star_color = game.star_config.color;
-            let gamma = game.star_config.gamma;
-            let scale = 50.0;  // Star scale
-            let exposure = game.star_config.exposure;
-            let speed_hi = game.star_config.speed_hi;
-            let speed_low = game.star_config.speed_low;
-            let zoom = game.star_config.zoom;
-
-            let ubo = StarUniformBufferObject {
-                model,
-                view,
-                proj,
-                view_pos,
-                time,
-                star_color,
-                gamma,
-                scale,
-                exposure,
-                speed_hi,
-                speed_low,
-                zoom,
-                _padding: 0.0,
-            };
-
-            let data = self.device.map_memory(
-                self.star_uniform_buffers_memory[self.current_frame],
-                0,
-                std::mem::size_of::<StarUniformBufferObject>() as vk::DeviceSize,
-                vk::MemoryMapFlags::empty(),
-            )?;
-            std::ptr::copy_nonoverlapping(&ubo, data as *mut StarUniformBufferObject, 1);
-            self.device.unmap_memory(self.star_uniform_buffers_memory[self.current_frame]);
-
-            Ok(())
-        }
 
         unsafe fn update_gizmo_uniform_buffer(&mut self, image_index: usize, game: &crate::game::Game) -> anyhow::Result<()> {
             let view = game.get_view_matrix();
@@ -3813,14 +3028,21 @@ impl VulkanRenderer {
             Ok(())
         }
 
+        /// Render movement widget for tactical turn-based movement
         pub fn render(&mut self, game: &mut crate::game::Game) -> anyhow::Result<()> {
             // Load any new custom meshes
             unsafe {
                 let mesh_objects = game.get_visible_meshes();
                 for (mesh_path, _) in mesh_objects.iter() {
                     if !self.custom_meshes.contains_key(mesh_path) {
-                        if let Err(e) = self.load_custom_mesh(mesh_path) {
-                            eprintln!("Failed to load mesh {}: {}", mesh_path, e);
+                        match self.load_custom_mesh(mesh_path) {
+                            Ok((bounds_min, bounds_max)) => {
+                                // Update ship bounds in game
+                                game.update_ship_bounds(mesh_path, bounds_min, bounds_max);
+                            }
+                            Err(e) => {
+                                eprintln!("Failed to load mesh {}: {}", mesh_path, e);
+                            }
                         }
                     }
                 }
@@ -3870,11 +3092,26 @@ impl VulkanRenderer {
                 self.images_in_flight[image_index as usize] = self.in_flight_fences[self.current_frame];
                 
                 self.update_uniform_buffer(self.current_frame, game)?;
-                self.update_skybox_uniform_buffer(self.current_frame, game)?;
-                self.update_nebula_uniform_buffer(self.current_frame, game)?;
                 self.update_gizmo_uniform_buffer(self.current_frame, game)?;
                 self.update_ssao_uniform_buffer(self.current_frame, game)?;
-                
+
+                // Update render passes (plugin system)
+                let ctx = crate::core::RenderContext {
+                    device: &self.device,
+                    instance: &self.instance,
+                    physical_device: self.physical_device,
+                    command_pool: self.command_pool,
+                    graphics_queue: self.graphics_queue,
+                    extent: self.swapchain_extent,
+                    depth_image_view: Some(self.depth_image_view),
+                    depth_sampler: Some(self.depth_sampler),
+                    mesh_pipeline: Some(self.graphics_pipeline),
+                    mesh_pipeline_layout: Some(self.pipeline_layout),
+                    mesh_descriptor_sets: Some(&self.descriptor_sets),
+                    custom_meshes: Some(&self.custom_meshes),
+                };
+                self.render_passes.update_all(&ctx, self.current_frame, game)?;
+
                 // Prepare ImGui frame
                 self.imgui_platform.prepare_frame(self.imgui_context.io_mut(), &self.window)?;
                 self.build_ui(game);
@@ -3974,170 +3211,24 @@ impl VulkanRenderer {
                 vk::SubpassContents::INLINE,
             );
             
-            // 1. Render skybox (furthest back)
-            if game.is_skybox_visible() {
-                self.device.cmd_bind_pipeline(
-                    command_buffer,
-                    vk::PipelineBindPoint::GRAPHICS,
-                    self.skybox.pipeline,
-                );
+            // 1. Render passes (skybox, nebula, meshes, etc.) - plugin system
+            let ctx = crate::core::RenderContext {
+                device: &self.device,
+                instance: &self.instance,
+                physical_device: self.physical_device,
+                command_pool: self.command_pool,
+                graphics_queue: self.graphics_queue,
+                extent: self.swapchain_extent,
+                depth_image_view: Some(self.depth_image_view),
+                depth_sampler: Some(self.depth_sampler),
+                mesh_pipeline: Some(self.graphics_pipeline),
+                mesh_pipeline_layout: Some(self.pipeline_layout),
+                mesh_descriptor_sets: Some(&self.descriptor_sets),
+                custom_meshes: Some(&self.custom_meshes),
+            };
+            self.render_passes.render_all(&ctx, command_buffer, self.current_frame, game)?;
 
-                let skybox_vertex_buffers = [self.skybox.vertex_buffer];
-                let skybox_offsets = [0];
-                self.device.cmd_bind_vertex_buffers(command_buffer, 0, &skybox_vertex_buffers, &skybox_offsets);
-                self.device.cmd_bind_index_buffer(command_buffer, self.skybox.index_buffer, 0, vk::IndexType::UINT32);
-
-                self.device.cmd_bind_descriptor_sets(
-                    command_buffer,
-                    vk::PipelineBindPoint::GRAPHICS,
-                    self.skybox.pipeline_layout,
-                    0,
-                    &[self.skybox.descriptor_sets[self.current_frame]],
-                    &[],
-                );
-
-                self.device.cmd_draw_indexed(command_buffer, self.skybox.mesh.indices.len() as u32, 1, 0, 0, 0);
-            }
-            
-            // 2. Render solid objects (all cubes) first to populate depth buffer
-            let visible_cubes = game.get_visible_cubes();
-            if !visible_cubes.is_empty() {
-                self.device.cmd_bind_pipeline(
-                    command_buffer,
-                    vk::PipelineBindPoint::GRAPHICS,
-                    self.graphics_pipeline,
-                );
-
-                // Bind cube mesh buffers once for all cubes
-                let vertex_buffers = [self.cube_vertex_buffer];
-                let offsets = [0];
-                self.device.cmd_bind_vertex_buffers(command_buffer, 0, &vertex_buffers, &offsets);
-                self.device.cmd_bind_index_buffer(command_buffer, self.cube_index_buffer, 0, vk::IndexType::UINT32);
-
-                self.device.cmd_bind_descriptor_sets(
-                    command_buffer,
-                    vk::PipelineBindPoint::GRAPHICS,
-                    self.pipeline_layout,
-                    0,
-                    &[self.descriptor_sets[self.current_frame]],
-                    &[],
-                );
-
-                let indices_per_cube = self.cube_mesh.indices.len() as u32;
-
-                // Render each cube with its own model matrix via push constants
-                for model_matrix in visible_cubes.iter() {
-                    // Update push constants with model matrix + material
-                    let push_data = MeshPushConstants {
-                        model: *model_matrix,
-                        albedo: game.material.albedo,
-                        metallic: game.material.metallic,
-                        roughness: game.material.roughness,
-                        ambient_strength: game.material.ambient_strength,
-                        gi_strength: game.material.gi_strength,
-                    };
-                    let push_constants = bytemuck::bytes_of(&push_data);
-                    self.device.cmd_push_constants(
-                        command_buffer,
-                        self.pipeline_layout,
-                        vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
-                        0,
-                        push_constants,
-                    );
-
-                    // Draw this cube instance
-                    self.device.cmd_draw_indexed(command_buffer, indices_per_cube, 1, 0, 0, 0);
-                }
-            }
-
-            // 2.5 Render custom mesh objects (spaceships, etc.)
-            let visible_meshes = game.get_visible_meshes();
-            if !visible_meshes.is_empty() {
-                self.device.cmd_bind_pipeline(
-                    command_buffer,
-                    vk::PipelineBindPoint::GRAPHICS,
-                    self.graphics_pipeline,
-                );
-
-                self.device.cmd_bind_descriptor_sets(
-                    command_buffer,
-                    vk::PipelineBindPoint::GRAPHICS,
-                    self.pipeline_layout,
-                    0,
-                    &[self.descriptor_sets[self.current_frame]],
-                    &[],
-                );
-
-                for (mesh_path, model_matrix) in visible_meshes.iter() {
-                    // Get mesh data from registry
-                    if let Some((mesh, vertex_buffer, _vertex_memory, index_buffer, _index_memory)) = self.custom_meshes.get(mesh_path) {
-                        // Bind this mesh's buffers
-                        let vertex_buffers = [*vertex_buffer];
-                        let offsets = [0];
-                        self.device.cmd_bind_vertex_buffers(command_buffer, 0, &vertex_buffers, &offsets);
-                        self.device.cmd_bind_index_buffer(command_buffer, *index_buffer, 0, vk::IndexType::UINT32);
-
-                        // Update push constants with model matrix + material
-                        let push_data = MeshPushConstants {
-                            model: *model_matrix,
-                            albedo: game.material.albedo,
-                            metallic: game.material.metallic,
-                            roughness: game.material.roughness,
-                            ambient_strength: game.material.ambient_strength,
-                            gi_strength: game.material.gi_strength,
-                        };
-                        let push_constants = bytemuck::bytes_of(&push_data);
-                        self.device.cmd_push_constants(
-                            command_buffer,
-                            self.pipeline_layout,
-                            vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
-                            0,
-                            push_constants,
-                        );
-
-                        // Draw this mesh
-                        self.device.cmd_draw_indexed(command_buffer, mesh.indices.len() as u32, 1, 0, 0, 0);
-                    }
-                }
-            }
-
-            // 2.6 Render sphere objects (stars) with procedural star shader
-            let visible_spheres = game.get_visible_spheres();
-            if !visible_spheres.is_empty() {
-                // Bind star pipeline
-                self.device.cmd_bind_pipeline(
-                    command_buffer,
-                    vk::PipelineBindPoint::GRAPHICS,
-                    self.star_pipeline,
-                );
-
-                // Bind sphere mesh buffers once for all spheres
-                let vertex_buffers = [self.sphere_vertex_buffer];
-                let offsets = [0];
-                self.device.cmd_bind_vertex_buffers(command_buffer, 0, &vertex_buffers, &offsets);
-                self.device.cmd_bind_index_buffer(command_buffer, self.sphere_index_buffer, 0, vk::IndexType::UINT32);
-
-                let indices_per_sphere = self.sphere_mesh.indices.len() as u32;
-
-                // Render each sphere with star shader
-                for model_matrix in visible_spheres.iter() {
-                    // Update uniform buffer with star parameters
-                    self.update_star_uniform_buffer(game, *model_matrix)?;
-
-                    // Bind star descriptor set
-                    self.device.cmd_bind_descriptor_sets(
-                        command_buffer,
-                        vk::PipelineBindPoint::GRAPHICS,
-                        self.star_pipeline_layout,
-                        0,
-                        &[self.star_descriptor_sets[self.current_frame]],
-                        &[],
-                    );
-
-                    // Draw this star
-                    self.device.cmd_draw_indexed(command_buffer, indices_per_sphere, 1, 0, 0, 0);
-                }
-            }
+            // Mesh rendering (cubes, custom meshes) and stars now handled by render pass plugins
 
             // Transition depth image for shader reading
             let depth_barrier = vk::ImageMemoryBarrier::default()
@@ -4166,26 +3257,7 @@ impl VulkanRenderer {
                 &[depth_barrier],
             );
 
-            // 3. Render nebula volumetric fog (reads depth buffer to interact with objects)
-            if game.is_nebula_visible() {
-                self.device.cmd_bind_pipeline(
-                    command_buffer,
-                    vk::PipelineBindPoint::GRAPHICS,
-                    self.nebula.pipeline,
-                );
-
-                self.device.cmd_bind_descriptor_sets(
-                    command_buffer,
-                    vk::PipelineBindPoint::GRAPHICS,
-                    self.nebula.pipeline_layout,
-                    0,
-                    &[self.nebula.descriptor_sets[self.current_frame]],
-                    &[],
-                );
-
-                // Draw fullscreen triangle (3 vertices, 1 instance, no vertex buffer)
-                self.device.cmd_draw(command_buffer, 3, 1, 0, 0);
-            }
+            // 3. Nebula is now rendered by the render pass plugin system above
 
             // Transition depth image back to depth attachment for next frame
             let depth_barrier_back = vk::ImageMemoryBarrier::default()
@@ -4583,18 +3655,6 @@ impl VulkanRenderer {
             self.graphics_pipeline = graphics_pipeline;
             self.wireframe_pipeline = wireframe_pipeline;
 
-            // Recreate skybox pipeline with new extent
-            self.device.destroy_pipeline(self.skybox.pipeline, None);
-            self.device.destroy_pipeline_layout(self.skybox.pipeline_layout, None);
-            let (skybox_pipeline_layout, skybox_pipeline) =
-            Self::create_skybox_pipeline(&self.device, swapchain_extent, self.render_pass, self.skybox.descriptor_set_layout)?;
-            
-            // Recreate nebula pipeline with new extent
-            self.device.destroy_pipeline(self.nebula.pipeline, None);
-            self.device.destroy_pipeline_layout(self.nebula.pipeline_layout, None);
-            let (nebula_pipeline_layout, nebula_pipeline) =
-            Self::create_nebula_pipeline(&self.device, swapchain_extent, self.render_pass, self.nebula.descriptor_set_layout)?;
-
             // Recreate gizmo pipeline with new extent
             self.device.destroy_pipeline(self.gizmo_pipeline, None);
             self.device.destroy_pipeline_layout(self.gizmo_pipeline_layout, None);
@@ -4615,45 +3675,28 @@ impl VulkanRenderer {
             // Update pipelines
             self.pipeline_layout = pipeline_layout;
             self.graphics_pipeline = graphics_pipeline;
-            self.skybox.pipeline_layout = skybox_pipeline_layout;
-            self.skybox.pipeline = skybox_pipeline;
-            self.nebula.pipeline_layout = nebula_pipeline_layout;
-            self.nebula.pipeline = nebula_pipeline;
             self.gizmo_pipeline_layout = gizmo_pipeline_layout;
             self.gizmo_pipeline = gizmo_pipeline;
 
             // Recreate ImGui pipeline with new swapchain extent
             self.imgui_renderer.recreate_pipeline(&self.device, self.render_pass, swapchain_extent)?;
 
-            // Update nebula descriptor sets with new depth image view
-            for (i, &descriptor_set) in self.nebula.descriptor_sets.iter().enumerate() {
-                let buffer_info = vk::DescriptorBufferInfo::default()
-                    .buffer(self.nebula.uniform_buffers[i])
-                    .offset(0)
-                    .range(std::mem::size_of::<crate::nebula::NebulaUniformBufferObject>() as vk::DeviceSize);
-
-                let image_info = vk::DescriptorImageInfo::default()
-                    .image_layout(vk::ImageLayout::DEPTH_STENCIL_READ_ONLY_OPTIMAL)
-                    .image_view(depth_image_view)
-                    .sampler(self.depth_sampler);
-
-                let descriptor_writes = [
-                    vk::WriteDescriptorSet::default()
-                        .dst_set(descriptor_set)
-                        .dst_binding(0)
-                        .dst_array_element(0)
-                        .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                        .buffer_info(std::slice::from_ref(&buffer_info)),
-                    vk::WriteDescriptorSet::default()
-                        .dst_set(descriptor_set)
-                        .dst_binding(1)
-                        .dst_array_element(0)
-                        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                        .image_info(std::slice::from_ref(&image_info)),
-                ];
-
-                self.device.update_descriptor_sets(&descriptor_writes, &[]);
-            }
+            // Update render passes with new pipeline and extent
+            let ctx = crate::core::RenderContext {
+                device: &self.device,
+                instance: &self.instance,
+                physical_device: self.physical_device,
+                command_pool: self.command_pool,
+                graphics_queue: self.graphics_queue,
+                extent: swapchain_extent,
+                depth_image_view: Some(depth_image_view),
+                depth_sampler: Some(self.depth_sampler),
+                mesh_pipeline: Some(graphics_pipeline),
+                mesh_pipeline_layout: Some(pipeline_layout),
+                mesh_descriptor_sets: Some(&self.descriptor_sets),
+                custom_meshes: Some(&self.custom_meshes),
+            };
+            self.render_passes.recreate_swapchain_all(&ctx, self.render_pass, swapchain_extent)?;
 
             Ok(())
         }
@@ -4698,12 +3741,6 @@ impl VulkanRenderer {
                 
                 self.device.destroy_descriptor_pool(self.descriptor_pool, None);
                 self.device.destroy_descriptor_set_layout(self.descriptor_set_layout, None);
-                
-                // Cleanup skybox resources
-                self.skybox.cleanup(&self.device);
-                
-                // Cleanup nebula resources
-                self.nebula.cleanup(&self.device);
 
                 // Cleanup gizmo resources
                 for i in 0..MAX_FRAMES_IN_FLIGHT {
@@ -4718,6 +3755,7 @@ impl VulkanRenderer {
                 self.device.destroy_buffer(self.gizmo_vertex_buffer, None);
                 self.device.free_memory(self.gizmo_vertex_buffer_memory, None);
 
+                // Cleanup widget resources
                 // Cleanup custom meshes
                 for (_path, (_mesh, vertex_buffer, vertex_memory, index_buffer, index_memory)) in self.custom_meshes.drain() {
                     self.device.destroy_buffer(vertex_buffer, None);
@@ -4781,16 +3819,7 @@ impl VulkanRenderer {
                     self.device.destroy_fence(self.in_flight_fences[i], None);
                 }
 
-                // Cleanup star shader resources
-                self.device.destroy_pipeline(self.star_pipeline, None);
-                self.device.destroy_pipeline(self.other_star_pipeline, None);
-                self.device.destroy_pipeline_layout(self.star_pipeline_layout, None);
-                self.device.destroy_descriptor_set_layout(self.star_descriptor_set_layout, None);
-                self.device.destroy_descriptor_pool(self.star_descriptor_pool, None);
-                for i in 0..MAX_FRAMES_IN_FLIGHT {
-                    self.device.destroy_buffer(self.star_uniform_buffers[i], None);
-                    self.device.free_memory(self.star_uniform_buffers_memory[i], None);
-                }
+                // Star shader resources now cleaned up by StarPass plugin
 
                 self.device.destroy_command_pool(self.command_pool, None);
                 self.device.destroy_pipeline(self.graphics_pipeline, None);
