@@ -4284,8 +4284,9 @@ impl VulkanRenderer {
                 self.device.cmd_draw_indexed(command_buffer, index_count, 1, 0, 0, 0);
             }
 
-            // 5. Render directional light visualization (yellow wireframe)
-            if let Some(light_transform) = game.get_directional_light() {
+            // 5. Render directional light visualization (yellow wireframe) - editor only
+            if in_edit_mode {
+                if let Some(light_transform) = game.get_directional_light() {
                 self.device.cmd_bind_pipeline(
                     command_buffer,
                     vk::PipelineBindPoint::GRAPHICS,
@@ -4318,6 +4319,7 @@ impl VulkanRenderer {
                 );
 
                 self.device.cmd_draw_indexed(command_buffer, self.dir_light_mesh.indices.len() as u32, 1, 0, 0, 0);
+                }
             }
 
             // Render ImGui

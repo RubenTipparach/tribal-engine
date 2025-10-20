@@ -954,4 +954,72 @@ impl Game {
     pub fn time(&self) -> f32 {
         self.time
     }
+
+    /// Enter play mode - save editor state and reload fresh game instance from disk
+    pub fn enter_play_mode(&mut self) {
+        println!("=== ENTERING PLAY MODE ===");
+
+        // 1. Save current editor state (scene + all configs)
+        println!("Saving editor state to disk...");
+        if let Err(e) = crate::ui::UiManager::save_scene_and_configs(self) {
+            eprintln!("Failed to save editor state: {}", e);
+            self.add_notification("Failed to save editor state!".to_string(), 3.0);
+            return;
+        }
+
+        // 2. Load fresh game instance from saved files
+        println!("Loading fresh game instance from disk...");
+        let fresh_game = Self::load_fresh_instance();
+
+        // 3. Replace self with fresh instance (preserve only runtime state)
+        *self = fresh_game;
+
+        // 4. Set game mode to Play
+        self.game_manager.mode = crate::game_manager::GameMode::Play;
+        self.game_manager.pause_state = crate::game_manager::PauseState::Running;
+
+        // 5. Clear any editor selections
+        self.scene.deselect();
+
+        println!("Play mode initialized!");
+        self.add_notification("Play mode started".to_string(), 2.0);
+    }
+
+    /// Exit play mode - discard game instance and reload editor state from disk
+    pub fn exit_play_mode(&mut self) {
+        println!("=== EXITING PLAY MODE ===");
+
+        // 1. Discard current play mode state (don't save)
+        println!("Discarding play mode state...");
+
+        // 2. Load fresh editor state from disk
+        println!("Reloading editor state from disk...");
+        let editor_game = Self::load_fresh_instance();
+
+        // 3. Replace self with editor instance
+        *self = editor_game;
+
+        // 4. Set game mode back to Edit
+        self.game_manager.mode = crate::game_manager::GameMode::Edit;
+
+        println!("Editor mode restored!");
+        self.add_notification("Returned to editor".to_string(), 2.0);
+    }
+
+    /// Load a fresh game instance from saved scene and config files
+    fn load_fresh_instance() -> Self {
+        let mut game = Self::new();
+
+        // Load scene from disk
+        crate::ui::UiManager::load_scene_on_startup(&mut game);
+
+        // Load all configs from disk
+        crate::ui::UiManager::load_all_configs(&mut game);
+
+        // Clear dirty flags since we just loaded from disk
+        game.scene_dirty = false;
+        game.config_dirty = false;
+
+        game
+    }
 }

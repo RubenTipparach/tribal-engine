@@ -45,18 +45,18 @@
       "y": 0.3,
       "z": 0.8
     },
-    "nebula_intensity": 1.0,
+    "nebula_intensity": 0.9264352,
     "background_brightness": 0.0
   },
   "camera": {
     "position": {
-      "x": 3.2622972,
-      "y": -5.9985194,
-      "z": -1.0852896
+      "x": -62.2641,
+      "y": 47.361313,
+      "z": -135.37445
     },
-    "pitch": 1.2627215,
-    "yaw": 2.0162652,
-    "roll": -0.79051995,
+    "pitch": -0.5378286,
+    "yaw": -2.3614645,
+    "roll": 3.4701348e-8,
     "move_speed": 5.0,
     "mouse_sensitivity": 0.003,
     "fov": 45.0

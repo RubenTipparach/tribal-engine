@@ -353,13 +353,11 @@ impl UiManager {
             // Play/Stop button
             if is_editing {
                 if ui.button("Play") {
-                    game.game_manager.start_play_mode(game.time());
-                    game.add_notification("Play mode started!".to_string(), 2.0);
+                    game.enter_play_mode();
                 }
             } else {
                 if ui.button("Stop") {
-                    game.game_manager.stop_play_mode();
-                    game.add_notification("Returned to Edit mode".to_string(), 2.0);
+                    game.exit_play_mode();
                 }
             }
 
@@ -1038,8 +1036,10 @@ impl UiManager {
     pub fn build_ui(context: &mut Context, game: &mut Game, viewport_width: f32, viewport_height: f32) {
         let ui = context.frame();
 
-        // Show object hover/selection info overlay
-        Self::render_object_info(&ui, game);
+        // Show object hover/selection info overlay (edit mode only)
+        if game.game_manager.is_editing() {
+            Self::render_object_info(&ui, game);
+        }
 
         // Show notifications in lower right
         Self::render_notifications(&ui, game);
@@ -1238,6 +1238,29 @@ impl UiManager {
         } else {
             println!("All configs saved to {}", CONFIG_PATH);
         }
+    }
+
+    /// Save scene and configs (returns error for game to handle)
+    pub fn save_scene_and_configs(game: &mut Game) -> anyhow::Result<()> {
+        // Save scene
+        let scene_data = SceneData::from_scene_graph(&game.scene);
+        scene_data.save(SCENE_PATH)?;
+
+        // Save all configs
+        let engine_config = EngineConfig {
+            nebula: (&game.nebula_config).into(),
+            skybox: (&game.skybox_config).into(),
+            camera: (&game.camera).into(),
+            ssao: (&game.ssao_config).into(),
+            star: (&game.star_config).into(),
+        };
+        engine_config.save(CONFIG_PATH)?;
+
+        // Clear dirty flags
+        game.scene_dirty = false;
+        game.config_dirty = false;
+
+        Ok(())
     }
 
     /// Save EVERYTHING (scene + all configs) to files

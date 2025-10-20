@@ -396,6 +396,83 @@ let point_lights = vec![
 - [ ] Post-processing effects
 - [ ] Compute shader support
 
+### Turn-Based Gameplay Systems
+
+To support deterministic turn-based tactical gameplay, the engine will need:
+
+- **Event Sourcing** - Store all player actions as a sequence of events
+  - Enables complete action history and state reconstruction
+  - Foundation for replay and undo functionality
+  - Ensures deterministic gameplay across sessions
+
+- **Snapshots** - Periodic state captures for efficient replay
+  - Critical for particles, physics, and visual effects
+  - Allows fast-forward/rewind during replay
+  - Reduces computational cost of rebuilding state from events
+
+- **Replay System** - Rewatch and analyze combat encounters
+  - **Session Replay**: Rewatch current battle from any point
+  - **Saved Replay**: Load and analyze past encounters
+  - **Tactical Analysis**: Study enemy behavior and improve strategies
+  - **Timeline Scrubbing**: Jump to any moment in the battle
+  - **Multiple Camera Angles**: Free camera during replay
+
+- **Async Multiplayer** - Turn-based play-by-email/internet
+  - **Action Files**: Compressed, deterministic turn data
+  - **Session State**: Full battle state for each player's turn
+  - **Storage Solutions**: Cloud storage integration (S3, Azure Blob, etc.)
+  - **Workflow**:
+    1. Player receives session file with current state
+    2. Replays entire battle up to their turn
+    3. Plans and executes their move
+    4. Sends updated action file to next player
+    5. When all players submit, turn advances
+    6. All players watch simultaneous execution
+  - **Security**: Action validation, anti-cheat measures
+  - **Compression**: Efficient encoding of game state and actions
+
+- **Movement Range Visualization** - Visual feedback for tactical planning
+  - **Position Range Sphere**: Wireframe sphere showing maximum movement distance
+  - **Rotation Arc Indicators**: Visual representation of available rotation angles
+  - **Partial Rotation Support**:
+    - Allocate rotation budget across turn timeline (e.g., X degrees total per turn)
+    - Split rotation: Y degrees at time T1, Z degrees at time T2
+    - Visual timeline showing rotation keyframes
+    - Smooth interpolation between rotation states
+  - **Movement Prediction Zones**: Color-coded areas showing reachable positions
+  - **Thruster Visual Feedback**: Real-time thruster firing effects during planning
+
+- **Collision & Damage System** - Dynamic combat interruptions
+  - **Mid-Turn Collisions**: Detect and resolve collisions during 10-second simulation
+  - **Involuntary Movement Interruption**:
+    - Collision severity determines impact on planned movement
+    - Ships may be knocked off-course, reducing or redirecting momentum
+    - Visual feedback showing deviation from planned path
+  - **Subsystem Damage**: Collision damage can disable critical systems:
+    - **Impulse Engines**: Reduced movement range or complete loss of maneuverability (drift mode)
+    - **Maneuvering Thrusters**: Loss of rotation capability or reduced rotation speed
+    - **Other Subsystems**: Weapons, shields, sensors may be damaged
+  - **Damage Severity Tiers**:
+    - Minor: Small trajectory deviation, no system damage
+    - Moderate: Significant course change, possible subsystem damage
+    - Severe: Major velocity change, high chance of critical system failure
+    - Catastrophic: Ship enters uncontrolled drift, multiple systems offline
+
+- **Enhanced Rotation & Thruster Systems** - Realistic motion within deterministic framework
+  - **Improved Slerp Interpolation**:
+    - Non-linear rotation curves based on thruster physics
+    - Acceleration/deceleration phases for rotation
+    - Realistic angular momentum visualization
+  - **Thruster Visual Effects**:
+    - Individual thruster firing animations based on rotation direction
+    - Main engine thrust visualization during acceleration
+    - Maneuvering thruster bursts for rotation changes
+    - Damage states affect thruster visuals (flickering, reduced output)
+  - **Deterministic Physics-Feel**:
+    - Predictable movement that feels physically realistic
+    - Maintains frame-perfect replay despite visual complexity
+    - Separation of deterministic simulation from visual effects
+
 ## Technical Details
 
 ### Coordinate System
