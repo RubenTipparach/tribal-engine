@@ -210,6 +210,12 @@ impl Engine {
                                     KeyCode::Digit3 => {
                                         game_state.game.gizmo_state.mode = crate::gizmo::GizmoMode::Scale;
                                     }
+                                    KeyCode::Enter => {
+                                        // End turn and execute ship movement in play mode
+                                        if game_state.game.game_manager.mode == crate::game_manager::GameMode::Play {
+                                            game_state.game.execute_ship_movement();
+                                        }
+                                    }
                                     _ => {}
                                 }
                             }

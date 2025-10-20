@@ -226,6 +226,33 @@
       },
       "visible": true,
       "editor_only": false
+    },
+    {
+      "id": 9,
+      "name": "Test Hologram Ship",
+      "object_type": {
+        "Hologram": "content/models/Fed_cruiser_ship.obj"
+      },
+      "transform": {
+        "position": [
+          10.0,
+          3.0,
+          10.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.5,
+          1.5,
+          1.5
+        ]
+      },
+      "visible": true,
+      "editor_only": false
     }
   ]
 }

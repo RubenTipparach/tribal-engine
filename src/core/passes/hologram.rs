@@ -5,16 +5,11 @@ use glam::{Mat4, Vec3, Vec4};
 use crate::core::RenderPass;
 use crate::game::Game;
 
-/// Push constants for holographic rendering
+/// Push constants for holographic rendering (same as mesh pass)
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct HologramPushConstants {
     pub model: Mat4,
-    pub color: Vec4,          // RGB color + alpha
-    pub fresnel_power: f32,   // Controls edge glow intensity (typical: 2-5)
-    pub scanline_speed: f32,  // Animation speed for scanlines
-    pub time: f32,            // Current time for animation
-    pub _padding: f32,
 }
 
 unsafe impl bytemuck::Pod for HologramPushConstants {}
@@ -49,6 +44,9 @@ impl RenderPass for HolographicPass {
             // Get shared descriptor sets and layout from context
             if let (Some(mesh_descriptor_sets),) = (ctx.mesh_descriptor_sets,) {
                 self.descriptor_sets = mesh_descriptor_sets.to_vec();
+                eprintln!("HolographicPass: Initialized with {} descriptor sets", self.descriptor_sets.len());
+            } else {
+                eprintln!("HolographicPass: WARNING - No mesh_descriptor_sets provided!");
             }
 
             // Create descriptor set layout (same as mesh pass - uses UBO)
@@ -64,6 +62,7 @@ impl RenderPass for HolographicPass {
             self.pipeline_layout = pipeline_layout;
             self.pipeline = pipeline;
 
+            eprintln!("HolographicPass: Pipeline initialized successfully");
             Ok(())
         }
     }
@@ -103,6 +102,10 @@ impl RenderPass for HolographicPass {
             );
 
             // Bind descriptor set
+            if frame_index >= self.descriptor_sets.len() {
+                eprintln!("HolographicPass: ERROR - frame_index {} >= descriptor_sets.len() {}", frame_index, self.descriptor_sets.len());
+                return Ok(());
+            }
             ctx.device.cmd_bind_descriptor_sets(
                 command_buffer,
                 vk::PipelineBindPoint::GRAPHICS,
@@ -122,14 +125,9 @@ impl RenderPass for HolographicPass {
                         ctx.device.cmd_bind_vertex_buffers(command_buffer, 0, &vertex_buffers, &offsets);
                         ctx.device.cmd_bind_index_buffer(command_buffer, *index_buffer, 0, vk::IndexType::UINT32);
 
-                        // Push constants
+                        // Push constants (just model matrix, same as mesh pass)
                         let push_data = HologramPushConstants {
                             model: *model_matrix,
-                            color: *color,
-                            fresnel_power: *fresnel_power,
-                            scanline_speed: *scanline_speed,
-                            time: game.get_time(),
-                            _padding: 0.0,
                         };
                         let push_constants = bytemuck::bytes_of(&push_data);
                         ctx.device.cmd_push_constants(
@@ -300,11 +298,11 @@ impl HolographicPass {
             .sample_shading_enable(false)
             .rasterization_samples(vk::SampleCountFlags::TYPE_1);
 
-        // Depth testing but no depth write for transparency
+        // TEST: Disable depth testing completely to debug visibility
         let depth_stencil = vk::PipelineDepthStencilStateCreateInfo::default()
-            .depth_test_enable(true)
-            .depth_write_enable(false) // Don't write to depth buffer for transparent objects
-            .depth_compare_op(vk::CompareOp::LESS);
+            .depth_test_enable(false)
+            .depth_write_enable(false)
+            .depth_compare_op(vk::CompareOp::ALWAYS);
 
         // Alpha blending for transparency
         let color_blend_attachment = vk::PipelineColorBlendAttachmentState::default()

@@ -72,6 +72,7 @@ pub enum ObjectType {
     SSAO, // SSAO settings singleton
     GameManager, // Game Manager singleton (play/pause, scenario params)
     Mesh(String), // Custom mesh with path to .obj file
+    Hologram(String), // Holographic mesh with path to .obj file
     Custom(u32), // For future custom mesh support
 }
 
@@ -124,6 +125,7 @@ impl SceneObject {
             ObjectType::SSAO => 0.0, // SSAO is a settings singleton, no visual representation
             ObjectType::GameManager => 0.0, // GameManager is a settings singleton, no visual representation
             ObjectType::Mesh(_) => 5.0, // Default size for mesh objects
+            ObjectType::Hologram(_) => 5.0, // Default size for hologram objects
             ObjectType::Custom(_) => 2.0, // Default for custom objects
         }
     }
