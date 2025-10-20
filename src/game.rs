@@ -3,6 +3,7 @@ use crate::nebula::NebulaConfig;
 use crate::core::Camera;
 use crate::scene::{SceneGraph, ObjectType, ObjectId};
 use crate::gizmo::{GizmoState, ObjectPicker};
+use crate::game_manager::GameManager;
 use serde::{Serialize, Deserialize};
 
 /// Skybox configuration
@@ -163,8 +164,14 @@ pub struct Game {
     time: f32,
     /// Camera
     pub camera: Camera,
-    /// Scene graph with all objects
+    /// Scene graph with all objects (legacy - being migrated to ECS)
     pub scene: SceneGraph,
+    /// ECS World for space entities (nebula, star, ships, asteroids)
+    pub ecs_world: crate::ecs::EcsWorld,
+    /// Nebula entity ID in ECS
+    pub nebula_entity: Option<hecs::Entity>,
+    /// Star entity ID in ECS
+    pub star_entity: Option<hecs::Entity>,
     /// Gizmo state for 3D manipulation
     pub gizmo_state: GizmoState,
     /// Object picker for mouse selection
@@ -203,28 +210,46 @@ pub struct Game {
     pub material_editor_open: bool,
     /// Directional light settings
     pub directional_light: crate::core::lighting::DirectionalLight,
+    /// Game Manager - play/pause state and scenario parameters
+    pub game_manager: GameManager,
 }
 
 impl Game {
     pub fn new() -> Self {
         let mut scene = SceneGraph::new();
 
-        // Add default scene objects
-        let cube1_id = scene.add_object("Cube 1".to_string(), ObjectType::Cube);
-        let cube2_id = scene.add_object("Cube 2".to_string(), ObjectType::Cube);
-        scene.add_object("Nebula".to_string(), ObjectType::Nebula);
+        // Add default scene objects (legacy scene graph - for star, nebula, SSAO, Skybox)
+        let star_id = scene.add_object("Star (Sun)".to_string(), ObjectType::Sphere);
+        // Nebula is in ECS, but also in scene graph for transform editing via gizmo
+        let nebula_id = scene.add_object("Nebula".to_string(), ObjectType::Nebula);
         scene.add_object("Skybox".to_string(), ObjectType::Skybox);
         scene.add_object("SSAO".to_string(), ObjectType::SSAO);
+        scene.add_object("Game Manager".to_string(), ObjectType::GameManager);
 
-        // Position the second cube offset from the first
-        if let Some(cube2) = scene.get_object_mut(cube2_id) {
-            cube2.transform.position = glam::Vec3::new(3.0, 0.0, 0.0);
+        // Nebula positioned behind origin for space battles in the foreground
+        let nebula_position = Vec3::new(0.0, 0.0, -10000.0);
+        if let Some(nebula) = scene.get_object_mut(nebula_id) {
+            nebula.transform.position = nebula_position;
+            nebula.transform.scale = Vec3::splat(20000.0); // 1000x scale
         }
 
-        Self {
+        // Star at center of nebula - procedural sphere with emissive material
+        if let Some(star) = scene.get_object_mut(star_id) {
+            star.transform.position = nebula_position; // Same as nebula center
+            star.transform.scale = Vec3::splat(50.0); // Large visible star
+        }
+
+        // Initialize ECS world with nebula (1000x scale) and star
+        let mut ecs_world = crate::ecs::EcsWorld::new();
+        let (nebula_entity, star_entity) = crate::ecs::init::init_default_scene(&mut ecs_world.world);
+
+        let mut game = Self {
             time: 0.0,
             camera: Camera::default(),
             scene,
+            ecs_world,
+            nebula_entity: Some(nebula_entity),
+            star_entity: Some(star_entity),
             gizmo_state: GizmoState::new(),
             object_picker: ObjectPicker::new(),
             ship_velocity: Vec3::ZERO,
@@ -244,7 +269,13 @@ impl Game {
             current_material_name: "New Material".to_string(),
             material_editor_open: false,
             directional_light: crate::core::lighting::DirectionalLight::default(),
-        }
+            game_manager: GameManager::default(),
+        };
+
+        // Sync nebula transform from scene to ECS
+        game.sync_nebula_transform();
+
+        game
     }
 
     /// Handle mouse hover for object picking
@@ -326,6 +357,7 @@ impl Game {
 
         if let Some(obj) = self.scene.selected_object_mut() {
             let mut transform_changed = false;
+            let obj_type = obj.object_type.clone(); // Store for later check
 
             match self.gizmo_state.mode {
                 crate::gizmo::GizmoMode::Translate => {
@@ -372,9 +404,17 @@ impl Game {
                 }
             }
 
+            // Drop the mutable borrow before calling other methods
+            drop(obj);
+
             // Mark scene dirty if transform changed
             if transform_changed {
                 self.mark_scene_dirty();
+
+                // If nebula was transformed, sync to ECS entity
+                if obj_type == ObjectType::Nebula {
+                    self.sync_nebula_transform();
+                }
             }
         }
     }
@@ -445,6 +485,70 @@ impl Game {
         });
     }
 
+    /// Sync nebula scene object transform to ECS entity
+    /// Called when the nebula transform is changed via gizmo or loaded from scene
+    pub fn sync_nebula_transform(&mut self) {
+        use glam::{DVec3, DQuat};
+        use crate::ecs::components::{Position, Rotation};
+
+        // Find nebula scene object
+        if let Some(nebula_id) = self.scene.find_by_type(ObjectType::Nebula) {
+            if let Some(nebula_obj) = self.scene.get_object(nebula_id) {
+                if let Some(entity) = self.nebula_entity {
+                    // Update ECS position from scene object
+                    if let Ok(mut pos) = self.ecs_world.world.get::<&mut Position>(entity) {
+                        pos.0 = DVec3::new(
+                            nebula_obj.transform.position.x as f64,
+                            nebula_obj.transform.position.y as f64,
+                            nebula_obj.transform.position.z as f64,
+                        );
+                    }
+
+                    // Update ECS rotation from scene object (quaternion)
+                    if let Ok(mut rot) = self.ecs_world.world.get::<&mut Rotation>(entity) {
+                        let quat = nebula_obj.transform.rotation;
+                        rot.0 = DQuat::from_xyzw(quat.x as f64, quat.y as f64, quat.z as f64, quat.w as f64);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Get nebula model matrix from ECS entity
+    pub fn get_nebula_model_matrix(&self) -> Mat4 {
+        use crate::ecs::components::{Position, Rotation};
+
+        if let Some(entity) = self.nebula_entity {
+            if let Ok(pos) = self.ecs_world.world.get::<&Position>(entity) {
+                if let Ok(rot) = self.ecs_world.world.get::<&Rotation>(entity) {
+                    // Get scale from scene object (scale isn't in ECS yet)
+                    let scale = if let Some(nebula_id) = self.scene.find_by_type(ObjectType::Nebula) {
+                        if let Some(nebula_obj) = self.scene.get_object(nebula_id) {
+                            nebula_obj.transform.scale
+                        } else {
+                            Vec3::ONE
+                        }
+                    } else {
+                        Vec3::ONE
+                    };
+
+                    // Convert from f64 to f32 for rendering
+                    let position = Vec3::new(pos.0.x as f32, pos.0.y as f32, pos.0.z as f32);
+                    let rotation = Quat::from_xyzw(
+                        rot.0.x as f32,
+                        rot.0.y as f32,
+                        rot.0.z as f32,
+                        rot.0.w as f32,
+                    );
+
+                    return Mat4::from_scale_rotation_translation(scale, rotation, position);
+                }
+            }
+        }
+
+        Mat4::IDENTITY
+    }
+
     /// Add a notification message
     pub fn add_notification(&mut self, message: String, duration: f32) {
         self.notifications.push(Notification::new(message, duration));
@@ -465,13 +569,24 @@ impl Game {
         self.scene_dirty || self.config_dirty
     }
 
-    /// Get all visible cubes with their model matrices
+    /// Get all visible cubes with their model matrices (includes nebula and spheres for picking)
     pub fn get_visible_cubes(&self) -> Vec<Mat4> {
         self.scene
-            .get_by_type(ObjectType::Cube)
+            .objects_sorted()
             .iter()
-            .filter_map(|&id| self.scene.get_object(id))
             .filter(|obj| obj.visible)
+            .filter(|obj| matches!(obj.object_type, ObjectType::Cube))
+            .map(|obj| obj.transform.model_matrix())
+            .collect()
+    }
+
+    /// Get all visible sphere objects (returns model matrix)
+    pub fn get_visible_spheres(&self) -> Vec<Mat4> {
+        self.scene
+            .objects_sorted()
+            .iter()
+            .filter(|obj| obj.visible)
+            .filter(|obj| matches!(obj.object_type, ObjectType::Sphere))
             .map(|obj| obj.transform.model_matrix())
             .collect()
     }
@@ -743,5 +858,10 @@ impl Game {
 
     pub fn roll_camera(&mut self, amount: f32) {
         self.camera.roll(amount);
+    }
+
+    /// Get current game time
+    pub fn time(&self) -> f32 {
+        self.time
     }
 }

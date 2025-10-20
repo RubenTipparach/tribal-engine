@@ -2,7 +2,7 @@ use ash::{vk, Entry};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use std::ffi::{CStr, CString};
 use winit::window::Window;
-use glam::{Mat4, Vec2, Vec3};
+use glam::{Mat4, Quat, Vec2, Vec3};
 use imgui::Context;
 
 use crate::mesh::{Mesh, Vertex};
@@ -30,6 +30,25 @@ struct MeshPushConstants {
 
 unsafe impl bytemuck::Pod for MeshPushConstants {}
 unsafe impl bytemuck::Zeroable for MeshPushConstants {}
+
+/// Star shader uniform buffer object
+#[repr(C)]
+#[derive(Copy, Clone)]
+struct StarUniformBufferObject {
+    model: Mat4,
+    view: Mat4,
+    proj: Mat4,
+    view_pos: Vec3,
+    time: f32,
+    star_color: Vec3,
+    gamma: f32,
+    scale: f32,
+    exposure: f32,
+    _padding: Vec2,
+}
+
+unsafe impl bytemuck::Pod for StarUniformBufferObject {}
+unsafe impl bytemuck::Zeroable for StarUniformBufferObject {}
 
 pub struct VulkanRenderer {
     _entry: Entry,
@@ -91,6 +110,20 @@ pub struct VulkanRenderer {
     cube_vertex_buffer_memory: vk::DeviceMemory,
     cube_index_buffer: vk::Buffer,
     cube_index_buffer_memory: vk::DeviceMemory,
+    // Mesh registry for sphere objects (stars, planets, etc.)
+    sphere_mesh: Mesh,
+    sphere_vertex_buffer: vk::Buffer,
+    sphere_vertex_buffer_memory: vk::DeviceMemory,
+    sphere_index_buffer: vk::Buffer,
+    sphere_index_buffer_memory: vk::DeviceMemory,
+    // Star shader pipeline and resources
+    star_descriptor_set_layout: vk::DescriptorSetLayout,
+    star_pipeline_layout: vk::PipelineLayout,
+    star_pipeline: vk::Pipeline,
+    star_uniform_buffers: Vec<vk::Buffer>,
+    star_uniform_buffers_memory: Vec<vk::DeviceMemory>,
+    star_descriptor_pool: vk::DescriptorPool,
+    star_descriptor_sets: Vec<vk::DescriptorSet>,
     // Custom mesh storage (path -> (mesh, vertex_buffer, index_buffer, memories))
     custom_meshes: std::collections::HashMap<String, (Mesh, vk::Buffer, vk::DeviceMemory, vk::Buffer, vk::DeviceMemory)>,
     // Directional light visualization
@@ -458,6 +491,50 @@ impl VulkanRenderer {
                 &cube_mesh.indices,
             )?;
 
+            // Create sphere mesh (will be used for star/planet objects)
+            let sphere_mesh = Mesh::create_sphere(1.0, 64, 32);  // High detail sphere
+
+            // Create sphere vertex buffer
+            let (sphere_vertex_buffer, sphere_vertex_buffer_memory) = Self::create_vertex_buffer(
+                &instance,
+                physical_device,
+                &device,
+                command_pool,
+                graphics_queue,
+                &sphere_mesh.vertices,
+            )?;
+
+            // Create sphere index buffer
+            let (sphere_index_buffer, sphere_index_buffer_memory) = Self::create_index_buffer(
+                &instance,
+                physical_device,
+                &device,
+                command_pool,
+                graphics_queue,
+                &sphere_mesh.indices,
+            )?;
+
+            // Create star shader pipeline and resources
+            let star_descriptor_set_layout = Self::create_star_descriptor_set_layout(&device)?;
+            let (star_pipeline_layout, star_pipeline) =
+                Self::create_star_pipeline(&device, swapchain_extent, render_pass, star_descriptor_set_layout)?;
+
+            let (star_uniform_buffers, star_uniform_buffers_memory) = Self::create_star_uniform_buffers(
+                &instance,
+                physical_device,
+                &device,
+                MAX_FRAMES_IN_FLIGHT,
+            )?;
+
+            let star_descriptor_pool = Self::create_star_descriptor_pool(&device, MAX_FRAMES_IN_FLIGHT)?;
+            let star_descriptor_sets = Self::create_star_descriptor_sets(
+                &device,
+                star_descriptor_pool,
+                star_descriptor_set_layout,
+                &star_uniform_buffers,
+                MAX_FRAMES_IN_FLIGHT,
+            )?;
+
             // Legacy: keep old mesh references for compatibility
             let mesh = cube_mesh.clone();
             let vertex_buffer = cube_vertex_buffer;
@@ -822,6 +899,18 @@ impl VulkanRenderer {
                 cube_vertex_buffer_memory,
                 cube_index_buffer,
                 cube_index_buffer_memory,
+                sphere_mesh,
+                sphere_vertex_buffer,
+                sphere_vertex_buffer_memory,
+                sphere_index_buffer,
+                sphere_index_buffer_memory,
+                star_descriptor_set_layout,
+                star_pipeline_layout,
+                star_pipeline,
+                star_uniform_buffers,
+                star_uniform_buffers_memory,
+                star_descriptor_pool,
+                star_descriptor_sets,
                 custom_meshes: std::collections::HashMap::new(),
                 dir_light_mesh,
                 dir_light_vertex_buffer,
@@ -1293,6 +1382,21 @@ impl VulkanRenderer {
                 .stage_flags(vk::ShaderStageFlags::FRAGMENT);
 
             let bindings = [ssao_binding, depth_binding];
+            let create_info = vk::DescriptorSetLayoutCreateInfo::default()
+                .bindings(&bindings);
+
+            Ok(device.create_descriptor_set_layout(&create_info, None)?)
+        }
+
+        unsafe fn create_star_descriptor_set_layout(device: &ash::Device) -> anyhow::Result<vk::DescriptorSetLayout> {
+            // Binding 0: Star uniform buffer (model, view, proj, star properties)
+            let ubo_binding = vk::DescriptorSetLayoutBinding::default()
+                .binding(0)
+                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT);
+
+            let bindings = [ubo_binding];
             let create_info = vk::DescriptorSetLayoutCreateInfo::default()
                 .bindings(&bindings);
 
@@ -2146,7 +2250,148 @@ impl VulkanRenderer {
             
             Ok((pipeline_layout, pipelines[0]))
         }
-        
+
+        unsafe fn create_star_pipeline(
+            device: &ash::Device,
+            extent: vk::Extent2D,
+            render_pass: vk::RenderPass,
+            descriptor_set_layout: vk::DescriptorSetLayout,
+        ) -> anyhow::Result<(vk::PipelineLayout, vk::Pipeline)> {
+            let vert_shader_code = include_bytes!("../../shaders/star.vert.spv");
+            let frag_shader_code = include_bytes!("../../shaders/star.frag.spv");
+
+            let vert_shader_module = Self::create_shader_module(device, vert_shader_code)?;
+            let frag_shader_module = Self::create_shader_module(device, frag_shader_code)?;
+
+            let entry_point = CString::new("main")?;
+
+            let vert_stage_info = vk::PipelineShaderStageCreateInfo::default()
+                .stage(vk::ShaderStageFlags::VERTEX)
+                .module(vert_shader_module)
+                .name(&entry_point);
+
+            let frag_stage_info = vk::PipelineShaderStageCreateInfo::default()
+                .stage(vk::ShaderStageFlags::FRAGMENT)
+                .module(frag_shader_module)
+                .name(&entry_point);
+
+            let shader_stages = [vert_stage_info, frag_stage_info];
+
+            // Vertex input: position, normal, uv (same as regular meshes)
+            let binding_description = vk::VertexInputBindingDescription::default()
+                .binding(0)
+                .stride(std::mem::size_of::<Vertex>() as u32)
+                .input_rate(vk::VertexInputRate::VERTEX);
+
+            let attribute_descriptions = [
+                vk::VertexInputAttributeDescription::default()
+                    .binding(0)
+                    .location(0)
+                    .format(vk::Format::R32G32B32_SFLOAT)
+                    .offset(0),
+                vk::VertexInputAttributeDescription::default()
+                    .binding(0)
+                    .location(1)
+                    .format(vk::Format::R32G32B32_SFLOAT)
+                    .offset(12),
+                vk::VertexInputAttributeDescription::default()
+                    .binding(0)
+                    .location(2)
+                    .format(vk::Format::R32G32_SFLOAT)
+                    .offset(24),
+            ];
+
+            let vertex_input_info = vk::PipelineVertexInputStateCreateInfo::default()
+                .vertex_binding_descriptions(std::slice::from_ref(&binding_description))
+                .vertex_attribute_descriptions(&attribute_descriptions);
+
+            let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
+                .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
+                .primitive_restart_enable(false);
+
+            let viewport = vk::Viewport {
+                x: 0.0,
+                y: 0.0,
+                width: extent.width as f32,
+                height: extent.height as f32,
+                min_depth: 0.0,
+                max_depth: 1.0,
+            };
+
+            let scissor = vk::Rect2D {
+                offset: vk::Offset2D { x: 0, y: 0 },
+                extent,
+            };
+
+            let viewport_state = vk::PipelineViewportStateCreateInfo::default()
+                .viewports(std::slice::from_ref(&viewport))
+                .scissors(std::slice::from_ref(&scissor));
+
+            let rasterizer = vk::PipelineRasterizationStateCreateInfo::default()
+                .depth_clamp_enable(false)
+                .rasterizer_discard_enable(false)
+                .polygon_mode(vk::PolygonMode::FILL)
+                .line_width(1.0)
+                .cull_mode(vk::CullModeFlags::BACK)
+                .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
+                .depth_bias_enable(false);
+
+            let multisampling = vk::PipelineMultisampleStateCreateInfo::default()
+                .sample_shading_enable(false)
+                .rasterization_samples(vk::SampleCountFlags::TYPE_1);
+
+            // Depth testing enabled for stars
+            let depth_stencil = vk::PipelineDepthStencilStateCreateInfo::default()
+                .depth_test_enable(true)
+                .depth_write_enable(true)
+                .depth_compare_op(vk::CompareOp::LESS);
+
+            // Additive blending for star glow
+            let color_blend_attachment = vk::PipelineColorBlendAttachmentState::default()
+                .color_write_mask(vk::ColorComponentFlags::RGBA)
+                .blend_enable(true)
+                .src_color_blend_factor(vk::BlendFactor::ONE)
+                .dst_color_blend_factor(vk::BlendFactor::ONE)
+                .color_blend_op(vk::BlendOp::ADD)
+                .src_alpha_blend_factor(vk::BlendFactor::ONE)
+                .dst_alpha_blend_factor(vk::BlendFactor::ZERO)
+                .alpha_blend_op(vk::BlendOp::ADD);
+
+            let color_blending = vk::PipelineColorBlendStateCreateInfo::default()
+                .logic_op_enable(false)
+                .attachments(std::slice::from_ref(&color_blend_attachment));
+
+            let set_layouts = [descriptor_set_layout];
+            let pipeline_layout_info = vk::PipelineLayoutCreateInfo::default()
+                .set_layouts(&set_layouts);
+
+            let pipeline_layout = device.create_pipeline_layout(&pipeline_layout_info, None)?;
+
+            let pipeline_info = vk::GraphicsPipelineCreateInfo::default()
+                .stages(&shader_stages)
+                .vertex_input_state(&vertex_input_info)
+                .input_assembly_state(&input_assembly)
+                .viewport_state(&viewport_state)
+                .rasterization_state(&rasterizer)
+                .multisample_state(&multisampling)
+                .depth_stencil_state(&depth_stencil)
+                .color_blend_state(&color_blending)
+                .layout(pipeline_layout)
+                .render_pass(render_pass)
+                .subpass(0);
+
+            let pipelines = device.create_graphics_pipelines(
+                vk::PipelineCache::null(),
+                std::slice::from_ref(&pipeline_info),
+                None,
+            ).map_err(|e| anyhow::anyhow!("Failed to create star pipeline: {:?}", e.1))?;
+
+            device.destroy_shader_module(vert_shader_module, None);
+            device.destroy_shader_module(frag_shader_module, None);
+
+            Ok((pipeline_layout, pipelines[0]))
+        }
+
         unsafe fn create_framebuffers(
             device: &ash::Device,
             image_views: &[vk::ImageView],
@@ -2396,6 +2641,33 @@ impl VulkanRenderer {
                 memories.push(memory);
             }
             
+            Ok((buffers, memories))
+        }
+
+        unsafe fn create_star_uniform_buffers(
+            instance: &ash::Instance,
+            physical_device: vk::PhysicalDevice,
+            device: &ash::Device,
+            count: usize,
+        ) -> anyhow::Result<(Vec<vk::Buffer>, Vec<vk::DeviceMemory>)> {
+            let buffer_size = std::mem::size_of::<StarUniformBufferObject>() as vk::DeviceSize;
+
+            let mut buffers = vec![];
+            let mut memories = vec![];
+
+            for _ in 0..count {
+                let (buffer, memory) = Self::create_buffer(
+                    instance,
+                    physical_device,
+                    device,
+                    buffer_size,
+                    vk::BufferUsageFlags::UNIFORM_BUFFER,
+                    vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+                )?;
+                buffers.push(buffer);
+                memories.push(memory);
+            }
+
             Ok((buffers, memories))
         }
 
@@ -2685,6 +2957,58 @@ impl VulkanRenderer {
                     .image_info(std::slice::from_ref(&image_info));
 
                 let descriptor_writes = [buffer_write, image_write];
+                device.update_descriptor_sets(&descriptor_writes, &[]);
+            }
+
+            Ok(descriptor_sets)
+        }
+
+        unsafe fn create_star_descriptor_pool(
+            device: &ash::Device,
+            count: usize,
+        ) -> anyhow::Result<vk::DescriptorPool> {
+            let pool_sizes = [
+                vk::DescriptorPoolSize::default()
+                    .ty(vk::DescriptorType::UNIFORM_BUFFER)
+                    .descriptor_count(count as u32),
+            ];
+
+            let create_info = vk::DescriptorPoolCreateInfo::default()
+                .pool_sizes(&pool_sizes)
+                .max_sets(count as u32);
+
+            Ok(device.create_descriptor_pool(&create_info, None)?)
+        }
+
+        unsafe fn create_star_descriptor_sets(
+            device: &ash::Device,
+            pool: vk::DescriptorPool,
+            layout: vk::DescriptorSetLayout,
+            buffers: &[vk::Buffer],
+            count: usize,
+        ) -> anyhow::Result<Vec<vk::DescriptorSet>> {
+            let layouts = vec![layout; count];
+            let alloc_info = vk::DescriptorSetAllocateInfo::default()
+                .descriptor_pool(pool)
+                .set_layouts(&layouts);
+
+            let descriptor_sets = device.allocate_descriptor_sets(&alloc_info)?;
+
+            for (i, &descriptor_set) in descriptor_sets.iter().enumerate() {
+                // Binding 0: Uniform buffer
+                let buffer_info = vk::DescriptorBufferInfo::default()
+                    .buffer(buffers[i])
+                    .offset(0)
+                    .range(std::mem::size_of::<StarUniformBufferObject>() as vk::DeviceSize);
+
+                let buffer_write = vk::WriteDescriptorSet::default()
+                    .dst_set(descriptor_set)
+                    .dst_binding(0)
+                    .dst_array_element(0)
+                    .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                    .buffer_info(std::slice::from_ref(&buffer_info));
+
+                let descriptor_writes = [buffer_write];
                 device.update_descriptor_sets(&descriptor_writes, &[]);
             }
 
@@ -3151,15 +3475,18 @@ impl VulkanRenderer {
                 self.swapchain_extent.height as f32,
             );
             let mouse = glam::Vec2::ZERO; // No mouse interaction for now
-            
+
             let view = game.get_view_matrix();
             let view_pos = game.get_camera_position();
 
             // CRITICAL: Use the EXACT SAME projection matrix as everything else!
             let aspect = self.swapchain_extent.width as f32 / self.swapchain_extent.height as f32;
             let proj = game.camera.projection_matrix(aspect);
-            
-            let ubo = NebulaRenderer::create_ubo(time, resolution, mouse, view, proj, view_pos, &game.nebula_config);
+
+            // Get nebula transform from ECS
+            let model = game.get_nebula_model_matrix();
+
+            let ubo = NebulaRenderer::create_ubo(time, resolution, mouse, view, proj, view_pos, &game.nebula_config, model);
             
             let data = self.device.map_memory(
                 self.nebula.uniform_buffers_memory[image_index],
@@ -3170,6 +3497,45 @@ impl VulkanRenderer {
             std::ptr::copy_nonoverlapping(&ubo, data as *mut NebulaUniformBufferObject, 1);
             self.device.unmap_memory(self.nebula.uniform_buffers_memory[image_index]);
             
+            Ok(())
+        }
+
+        unsafe fn update_star_uniform_buffer(&mut self, game: &crate::game::Game, model: Mat4) -> anyhow::Result<()> {
+            let time = game.get_time();
+            let view = game.get_view_matrix();
+            let view_pos = game.get_camera_position();
+
+            let aspect = self.swapchain_extent.width as f32 / self.swapchain_extent.height as f32;
+            let proj = game.camera.projection_matrix(aspect);
+
+            // Star shader parameters
+            let star_color = Vec3::new(1.0, 0.9, 0.7);  // Yellowish star
+            let gamma = 2.2;
+            let scale = 50.0;  // Star scale
+            let exposure = 40.2;
+
+            let ubo = StarUniformBufferObject {
+                model,
+                view,
+                proj,
+                view_pos,
+                time,
+                star_color,
+                gamma,
+                scale,
+                exposure,
+                _padding: Vec2::ZERO,
+            };
+
+            let data = self.device.map_memory(
+                self.star_uniform_buffers_memory[self.current_frame],
+                0,
+                std::mem::size_of::<StarUniformBufferObject>() as vk::DeviceSize,
+                vk::MemoryMapFlags::empty(),
+            )?;
+            std::ptr::copy_nonoverlapping(&ubo, data as *mut StarUniformBufferObject, 1);
+            self.device.unmap_memory(self.star_uniform_buffers_memory[self.current_frame]);
+
             Ok(())
         }
 
@@ -3184,15 +3550,29 @@ impl VulkanRenderer {
             // Gizmo transform based on mode:
             // - Translate: world-space orientation (easier to use)
             // - Rotate/Scale: object-space orientation (rotate with object)
+            // Scale the gizmo based on distance from camera to maintain constant screen size
             let model = if let Some(obj) = game.scene.selected_object() {
+                // Calculate distance from camera to object
+                let distance = (obj.transform.position - game.camera.position()).length();
+                // Scale factor: make gizmo size proportional to distance (0.15 is a tuning factor)
+                let gizmo_scale = distance * 0.15;
+
                 match game.gizmo_state.mode {
                     crate::gizmo::GizmoMode::Translate => {
-                        // World-space: only position
-                        Mat4::from_translation(obj.transform.position)
+                        // World-space: only position + uniform scale
+                        Mat4::from_scale_rotation_translation(
+                            Vec3::splat(gizmo_scale),
+                            Quat::IDENTITY,
+                            obj.transform.position
+                        )
                     }
                     crate::gizmo::GizmoMode::Rotate | crate::gizmo::GizmoMode::Scale => {
-                        // Object-space: position + rotation (no scale, gizmo stays same size)
-                        Mat4::from_rotation_translation(obj.transform.rotation, obj.transform.position)
+                        // Object-space: position + rotation + uniform scale
+                        Mat4::from_scale_rotation_translation(
+                            Vec3::splat(gizmo_scale),
+                            obj.transform.rotation,
+                            obj.transform.position
+                        )
                     }
                 }
             } else {
@@ -3560,6 +3940,44 @@ impl VulkanRenderer {
                         // Draw this mesh
                         self.device.cmd_draw_indexed(command_buffer, mesh.indices.len() as u32, 1, 0, 0, 0);
                     }
+                }
+            }
+
+            // 2.6 Render sphere objects (stars) with procedural star shader
+            let visible_spheres = game.get_visible_spheres();
+            if !visible_spheres.is_empty() {
+                // Bind star pipeline
+                self.device.cmd_bind_pipeline(
+                    command_buffer,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    self.star_pipeline,
+                );
+
+                // Bind sphere mesh buffers once for all spheres
+                let vertex_buffers = [self.sphere_vertex_buffer];
+                let offsets = [0];
+                self.device.cmd_bind_vertex_buffers(command_buffer, 0, &vertex_buffers, &offsets);
+                self.device.cmd_bind_index_buffer(command_buffer, self.sphere_index_buffer, 0, vk::IndexType::UINT32);
+
+                let indices_per_sphere = self.sphere_mesh.indices.len() as u32;
+
+                // Render each sphere with star shader
+                for model_matrix in visible_spheres.iter() {
+                    // Update uniform buffer with star parameters
+                    self.update_star_uniform_buffer(game, *model_matrix)?;
+
+                    // Bind star descriptor set
+                    self.device.cmd_bind_descriptor_sets(
+                        command_buffer,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        self.star_pipeline_layout,
+                        0,
+                        &[self.star_descriptor_sets[self.current_frame]],
+                        &[],
+                    );
+
+                    // Draw this star
+                    self.device.cmd_draw_indexed(command_buffer, indices_per_sphere, 1, 0, 0, 0);
                 }
             }
 

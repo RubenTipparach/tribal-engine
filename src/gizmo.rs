@@ -65,14 +65,18 @@ impl GizmoState {
         let proj = camera.projection_matrix(viewport_width / viewport_height);
         let ray = Ray::from_screen(mouse_x, mouse_y, viewport_width, viewport_height, view, proj);
 
+        // Calculate gizmo scale based on distance from camera (same as rendering)
+        let distance = (object_pos - camera.position()).length();
+        let gizmo_scale = distance * 0.15;
+
         let mut closest_axis = GizmoAxis::None;
         let mut closest_dist = f32::MAX;
 
         match self.mode {
             GizmoMode::Translate => {
                 // Translate uses world-space axes
-                let arrow_length = 1.0;
-                let pick_radius = 0.15;
+                let arrow_length = 1.0 * gizmo_scale;
+                let pick_radius = 0.15 * gizmo_scale;
 
                 // Check X axis (Red)
                 let x_end = object_pos + Vec3::X * arrow_length;
@@ -102,8 +106,8 @@ impl GizmoState {
             }
             GizmoMode::Rotate | GizmoMode::Scale => {
                 // Rotate and Scale use object-space axes (rotated with object)
-                let length = 1.0;
-                let pick_tolerance = 0.15;
+                let length = 1.0 * gizmo_scale;
+                let pick_tolerance = 0.15 * gizmo_scale;
 
                 // Transform axes by object rotation
                 let x_axis = object_rotation * Vec3::X;
@@ -133,7 +137,7 @@ impl GizmoState {
                     }
                 } else {
                     // Line picking for scale
-                    let pick_radius = 0.15;
+                    let pick_radius = 0.15 * gizmo_scale;
 
                     let x_end = object_pos + x_axis * length;
                     if let Some(dist) = ray.intersects_cylinder(object_pos, x_end, pick_radius) {

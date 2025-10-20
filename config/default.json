@@ -1,9 +1,9 @@
 {
   "nebula": {
-    "zoom": 0.01,
+    "zoom": 0.00001,
     "density": 2.0,
     "brightness": 1.0,
-    "scale": 20.0,
+    "scale": 10.0,
     "color_center": {
       "x": 5.6,
       "y": 7.0,
@@ -25,15 +25,15 @@
       "z": 0.1
     },
     "light_color": {
-      "x": 1.0,
-      "y": 0.5,
-      "z": 0.25
+      "x": 0.0,
+      "y": 0.1210477,
+      "z": 0.7837838
     },
     "light_intensity": 0.033333335,
-    "max_distance": 10.0
+    "max_distance": 10000.0
   },
   "skybox": {
-    "star_density": 3.244,
+    "star_density": 1.9460953,
     "star_brightness": 6.412,
     "nebula_primary_color": {
       "x": 0.0,
@@ -45,18 +45,18 @@
       "y": 0.02325547,
       "z": 0.3011583
     },
-    "nebula_intensity": 0.303,
+    "nebula_intensity": 0.019262997,
     "background_brightness": 0.0
   },
   "camera": {
     "position": {
-      "x": 0.0,
-      "y": 0.0,
-      "z": 5.0
+      "x": -3.1301298,
+      "y": 7.209311,
+      "z": 1.7364055
     },
-    "pitch": 0.036464356,
-    "yaw": -0.33480617,
-    "roll": -0.16039518,
+    "pitch": -0.23415267,
+    "yaw": -2.4136503,
+    "roll": -0.8058873,
     "move_speed": 5.0,
     "mouse_sensitivity": 0.003,
     "fov": 70.0

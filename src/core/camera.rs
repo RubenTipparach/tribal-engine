@@ -172,7 +172,8 @@ impl Camera {
 
 impl Default for Camera {
     fn default() -> Self {
-        Self::new(Vec3::new(0.0, 2.0, 5.0))
+        // Start at the center (origin) of the system
+        Self::new(Vec3::new(0.0, 0.0, 0.0))
     }
 }
 

@@ -1,13 +1,27 @@
 # Tribal Engine
 
-A forward-rendered Vulkan game engine featuring:
-- **Scene graph system** with object selection and transforms
-- **Procedurally generated raymarched SDF nebula** rendering
+A turn-based space tactics game engine built on Vulkan featuring:
+
+## Core Features
+- **64-bit coordinate system** for true-to-scale solar systems and planetary environments
+- **ECS architecture** (hecs) with deterministic physics (Rapier)
+- **Camera-relative rendering** enabling massive scales without precision loss
+- **1000x scaled nebula** with 64-bit precision (20,000 km scale)
+- **Procedural star with limb darkening** - physically-based solar simulation parented to nebula
+- **SSAO (Screen-Space Ambient Occlusion)** with bilateral blur
+- **Scene graph system** with object selection, transforms, and gizmos
+- **Procedurally generated raymarched SDF nebula** rendering at planetary scale
 - **Traditional polygon mesh rendering** with OBJ file support
 - **PBR (Physically Based Rendering)** material system
 - **Directional and point light** sources
 - **ImGui** integration for runtime tweaking
 - **Persistent JSON configuration** for all engine parameters and scene data
+
+## Architecture
+- **Turn-based event system** for deterministic gameplay and replay
+- **Spatial partitioning** for efficient large-scale battles
+- **LOD (Level of Detail)** management for rendering optimization
+- **Multi-scale rendering** from ship combat to solar system view
 
 ## Prerequisites
 
@@ -53,35 +67,90 @@ tribal-engine/
 │   ├── main.rs              # Entry point
 │   ├── engine.rs            # Core engine loop and window management
 │   ├── game.rs              # Game state and logic
-│   ├── renderer.rs          # Vulkan renderer implementation
 │   ├── mesh.rs              # Mesh data structures and OBJ loader
-│   ├── lighting.rs          # Lighting system (directional/point lights)
+│   ├── material.rs          # Material properties (PBR)
+│   ├── material_library.rs  # Material storage and management
 │   ├── nebula.rs            # SDF nebula rendering
 │   ├── background.rs        # Skybox rendering
 │   ├── scene.rs             # Scene graph and transform system
 │   ├── config.rs            # JSON configuration persistence
+│   ├── gizmo.rs             # 3D transform gizmos
 │   ├── core/                # Core Vulkan abstractions
+│   │   ├── renderer.rs      # Vulkan renderer implementation
 │   │   ├── camera.rs        # Camera system
+│   │   ├── lighting.rs      # Lighting system (directional/point lights)
 │   │   └── ...
-│   └── ui/                  # ImGui integration
-│       ├── mod.rs           # UI manager and panels
-│       └── gui_builder.rs   # ImGui helper widgets
+│   ├── ecs/                 # ECS system (NEW - 64-bit coordinates)
+│   │   ├── mod.rs           # ECS world, camera-relative rendering
+│   │   ├── components.rs    # Position, Rotation, Star, Nebula, Ship, etc.
+│   │   ├── hierarchy.rs     # Parent-child transform system
+│   │   ├── init.rs          # Entity creation helpers
+│   │   ├── physics.rs       # Rapier physics integration
+│   │   ├── spatial.rs       # Spatial partitioning, LOD management
+│   │   └── rendering.rs     # Extract render batch from ECS
+│   ├── ui/                  # ImGui integration
+│   │   ├── mod.rs           # UI manager and panels
+│   │   └── gui_builder.rs   # ImGui helper widgets
+│   └── imgui_renderer.rs    # ImGui Vulkan integration
 ├── shaders/
 │   ├── mesh.vert            # Mesh vertex shader
-│   ├── mesh.frag            # PBR fragment shader
+│   ├── mesh.frag            # PBR fragment shader with SSAO
 │   ├── nebula.vert          # Nebula vertex shader
 │   ├── nebula.frag          # SDF raymarching fragment shader
 │   ├── skybox.vert          # Skybox vertex shader
-│   ├── skybox.frag          # Skybox fragment shader
+│   ├── skybox.frag          # Skybox fragment shader (multiple variants)
+│   ├── gizmo.vert           # Gizmo vertex shader
+│   ├── gizmo.frag           # Gizmo fragment shader
+│   ├── star.vert            # Star vertex shader (NEW!)
+│   ├── star.frag            # Star fragment shader with limb darkening (NEW!)
+│   ├── ssao.vert            # SSAO generation vertex shader
+│   ├── ssao.frag            # SSAO generation fragment shader
+│   ├── ssao_blur.vert       # SSAO bilateral blur vertex shader
+│   ├── ssao_blur.frag       # SSAO bilateral blur fragment shader
 │   ├── imgui.vert           # ImGui vertex shader
 │   └── imgui.frag           # ImGui fragment shader
 ├── config/
-│   ├── default.json         # Engine settings (camera, nebula, skybox)
-│   └── scene.json           # Scene objects and transforms
+│   ├── default.json         # Engine settings (camera, nebula, skybox, SSAO)
+│   ├── scene.json           # Scene objects and transforms
+│   └── materials.json       # Material library
+├── docs/
+│   ├── 64BIT_COORDINATE_SYSTEM.md           # 64-bit coordinate documentation
+│   ├── ARCHITECTURE_ECS.md                  # ECS architecture guide
+│   ├── ECS_NEBULA_STAR_IMPLEMENTATION.md    # Nebula & star implementation (NEW!)
+│   └── ...
 └── Cargo.toml
 ```
 
 ## Features
+
+### 64-Bit Coordinate System (NEW!)
+- **True-to-scale solar systems**: Render Earth, Moon, planets at real astronomical distances
+- **Camera-relative rendering**: GPU receives 32-bit positions near (0,0,0) for perfect precision
+- **1000x nebula scaling**: Massive nebulas spanning millions of kilometers without artifacts
+- **No jitter or z-fighting**: Sub-millimeter precision at any scale
+- See [docs/64BIT_COORDINATE_SYSTEM.md](docs/64BIT_COORDINATE_SYSTEM.md) for details
+
+### ECS Architecture (NEW!)
+- **hecs**: Fast, deterministic Entity Component System
+- **Rapier3D**: Deterministic physics for collision detection
+- **Spatial partitioning**: Efficient queries for large-scale battles (10,000+ entities)
+- **LOD management**: Automatic detail reduction based on distance
+- **Turn-based event system**: Event sourcing for replay and undo
+- See [docs/ARCHITECTURE_ECS.md](docs/ARCHITECTURE_ECS.md) for architecture guide
+
+### SSAO (Screen-Space Ambient Occlusion)
+- Real-time ambient occlusion calculation
+- Bilateral blur for smooth results
+- Configurable radius, bias, power, and kernel size
+- Toggle on/off in ImGui
+- Enhances depth perception and realism
+
+### Transform Gizmos
+- Visual 3D manipulation tools
+- Translate, rotate, and scale modes
+- Color-coded axes (X=red, Y=green, Z=blue)
+- Click and drag to transform objects
+- Screen-space projection for intuitive control
 
 ### Mesh Rendering
 - OBJ file loader with proper vertex/normal/UV support
@@ -90,61 +159,113 @@ tribal-engine/
 - PBR material shading:
   - Metallic/Roughness workflow
   - Cook-Torrance BRDF
-  - Normal mapping ready
-
-### Lighting System
-- **Directional Light**: Sun-like directional lighting with color and intensity
-- **Point Lights**: Positional lights with attenuation (up to 4 concurrent)
-- PBR lighting calculations using:
   - GGX normal distribution
   - Schlick-GGX geometry function
   - Fresnel-Schlick approximation
+  - Normal mapping ready
+
+### Lighting System
+- **Directional Light**: Sun-like directional lighting with color, intensity, and shadow color
+- **Point Lights**: Positional lights with attenuation (up to 4 concurrent)
+- **Global Illumination**: Approximate GI using ambient term
+- Interactive light direction control via gizmo
 
 ### Raymarched SDF Nebula
 - Procedural volumetric nebula using signed distance fields
 - Configurable colors, density, brightness, and scale
+- **Scalable to planetary sizes** with 64-bit coordinates (1000x scale = 20,000 km!)
 - Real-time parameter tweaking via ImGui
+- Multiple color zones for realistic appearance
+
+### Procedural Star with Limb Darkening (NEW!)
+- **Physically-based solar simulation** with realistic limb darkening
+- **Wavelength-dependent darkening** using real NASA solar physics equations
+- **Surface features**:
+  - Multi-octave procedural turbulence
+  - Animated flow patterns
+  - Dynamic sunspots
+  - Realistic color gradients
+- **Parented to nebula**: Star automatically follows nebula position via ECS hierarchy
+- **True-to-scale**: Default Sun radius (695,700 km) using 64-bit coordinates
+- Configurable color, gamma, and exposure
+- Based on real limb darkening coefficients from NASA GSFC
+- See [docs/ECS_NEBULA_STAR_IMPLEMENTATION.md](docs/ECS_NEBULA_STAR_IMPLEMENTATION.md) for details
 
 ### Skybox System
 - Inverted sphere mesh for skybox rendering
-- Procedural starfield with configurable density
-- Nebula clouds with primary/secondary colors
+- **Procedural starfield** with configurable density and brightness
+- **Nebula clouds** with primary/secondary colors
 - Background brightness control
+- Multiple shader variants (simple, starry)
 
 ### Scene Graph & Transform System
 - Hierarchical scene organization with selection
 - Per-object transforms (position, rotation, scale)
+- **Singletons category** for unique objects (Skybox, Nebula, SSAO, Lights)
 - Scene Hierarchy panel for object selection
 - Transform editor for modifying objects
 - Visibility toggles per object
+- **Focus camera** on selected object (double-click)
+- Duplicate objects
 - Scene persistence in `config/scene.json`
 
 ### Configuration System
 - JSON-based persistence for all engine parameters
+- **Unified save system**: One "Save Config" button saves everything
 - Separation of concerns:
-  - `config/default.json` - Engine settings (nebula, skybox, camera)
+  - `config/default.json` - Engine settings (nebula, skybox, camera, SSAO)
   - `config/scene.json` - Scene objects and transforms
-- Save/Load buttons in ImGui panels
+  - `config/materials.json` - Material library
+- Auto-load on startup
 - Easy benchmarking by reverting to defaults
 - All configs stored in source control
 
+### Material System
+- Material library with save/load
+- Per-object material assignment
+- PBR parameters: albedo, metallic, roughness, ambient strength
+- GI (Global Illumination) strength
+- Material editor with real-time preview
+
 ### Vulkan Renderer
-- Forward rendering pipeline
+- Forward rendering pipeline with SSAO post-processing
 - Depth testing and proper blending
+- Multi-pass rendering (geometry → SSAO → blur → lighting)
 - Command buffer management
 - Descriptor sets for uniform buffers
+- Push constants for per-draw data
 - Validation layers in debug mode
 
 ## Controls
 
-- **WASD**: Camera movement
-- **Right Mouse + Drag**: Look around
-- **ImGui Panels**:
-  - **Scene Hierarchy**: Select objects to edit
-  - **Transform**: Edit position, rotation, scale of selected object
-  - **Nebula Settings**: Appears when nebula selected
-  - **Skybox Settings**: Appears when skybox selected
-  - **Save/Load buttons**: Persist your changes
+### Camera
+- **WASD**: Move camera (forward/left/back/right)
+- **Space**: Move up
+- **Left Shift**: Move down
+- **Right Mouse + Drag**: Look around (free camera)
+- **Middle Mouse**: Toggle camera up-lock (world Y-up vs. free orientation)
+
+### Object Selection & Manipulation
+- **Left Click**: Select object in scene hierarchy
+- **Double Click**: Select and focus camera on object
+- **Gizmo**: Click and drag colored axes to transform selected object
+  - Red axis = X
+  - Green axis = Y
+  - Blue axis = Z
+
+### ImGui Panels
+- **Scene Hierarchy**:
+  - Select objects to edit
+  - Singletons (Skybox, Nebula, SSAO, Lights) at top
+  - Regular objects (Cubes, Meshes) below
+  - Save Config button saves EVERYTHING
+- **Transform**: Edit position, rotation, scale of selected object
+- **Object-Specific Settings** (appears when selected):
+  - **Nebula Settings**: Colors, density, brightness, scale
+  - **Skybox Settings**: Stars, nebula clouds, background
+  - **SSAO Settings**: Enable/disable, radius, bias, power, kernel size
+  - **Directional Light**: Color, intensity, shadow color
+- **Material Editor**: Edit PBR materials, save to library
 
 ## Configuration Files
 
@@ -167,15 +288,26 @@ Object-specific properties that extend beyond basic transforms:
   "skybox": {
     "star_density": 2.0,
     "star_brightness": 3.0,
-    ...
+    "nebula_primary_color": { "x": 0.1, "y": 0.2, "z": 0.4 },
+    "nebula_secondary_color": { "x": 0.6, "y": 0.3, "z": 0.8 },
+    "nebula_intensity": 1.0,
+    "background_brightness": 0.0
   },
   "camera": {
     "position": { "x": 0.0, "y": 2.0, "z": 5.0 },
     "pitch": 0.0,
     "yaw": 0.0,
     "roll": 0.0,
-    "fov": 70.0,
-    ...
+    "move_speed": 5.0,
+    "mouse_sensitivity": 0.003,
+    "fov": 70.0
+  },
+  "ssao": {
+    "enabled": true,
+    "radius": 1.0,
+    "bias": 0.1,
+    "power": 2.0,
+    "kernel_size": 64
   }
 }
 ```

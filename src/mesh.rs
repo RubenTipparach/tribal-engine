@@ -188,6 +188,58 @@ impl Mesh {
         Self { vertices, indices }
     }
 
+    pub fn create_sphere(radius: f32, segments: u32, rings: u32) -> Self {
+        let mut vertices = Vec::new();
+        let mut indices = Vec::new();
+
+        // Generate vertices
+        for ring in 0..=rings {
+            let phi = std::f32::consts::PI * ring as f32 / rings as f32;
+            let sin_phi = phi.sin();
+            let cos_phi = phi.cos();
+
+            for segment in 0..=segments {
+                let theta = 2.0 * std::f32::consts::PI * segment as f32 / segments as f32;
+                let sin_theta = theta.sin();
+                let cos_theta = theta.cos();
+
+                let x = sin_phi * cos_theta;
+                let y = cos_phi;
+                let z = sin_phi * sin_theta;
+
+                let position = Vec3::new(x * radius, y * radius, z * radius);
+                // Normal points outward
+                let normal = Vec3::new(x, y, z);
+                let uv = Vec2::new(segment as f32 / segments as f32, ring as f32 / rings as f32);
+
+                vertices.push(Vertex {
+                    position,
+                    normal,
+                    uv,
+                });
+            }
+        }
+
+        // Generate indices (inverted winding so normals face outward from inside)
+        for ring in 0..rings {
+            for segment in 0..segments {
+                let current = ring * (segments + 1) + segment;
+                let next = current + segments + 1;
+
+                // Inverted triangle winding
+                indices.push(current);
+                indices.push(current + 1);
+                indices.push(next);
+
+                indices.push(next);
+                indices.push(current + 1);
+                indices.push(next + 1);
+            }
+        }
+
+        Self { vertices, indices }
+    }
+
     pub fn create_inverted_sphere(radius: f32, segments: u32, rings: u32) -> Self {
         let mut vertices = Vec::new();
         let mut indices = Vec::new();

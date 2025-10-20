@@ -34,7 +34,7 @@ impl Engine {
         let event_loop = EventLoop::new()?;
         let window = WindowBuilder::new()
             .with_title("Tribal Engine - Vulkan SDF Renderer")
-            .with_inner_size(winit::dpi::LogicalSize::new(1280, 720))
+            .with_inner_size(winit::dpi::LogicalSize::new(1600, 900))
             .build(&event_loop)?;
 
         let renderer = VulkanRenderer::new(window)?;

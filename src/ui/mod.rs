@@ -92,6 +92,7 @@ impl UiManager {
             .position(270.0, 10.0)
             .build(|content| {
                 content.text("Volumetric nebula raymarch shader");
+                content.text("Use transform gizmo to move/rotate nebula");
 
                 let config = &mut game.nebula_config;
 
@@ -245,6 +246,172 @@ impl UiManager {
         {
             game.mark_config_dirty();
         }
+    }
+
+    /// Build game mode toolbar (Play/Pause/Edit)
+    fn build_game_mode_toolbar(ui: &Ui, game: &mut Game) {
+        let is_editing = game.game_manager.is_editing();
+        let is_playing = game.game_manager.is_playing();
+        let is_paused = game.game_manager.is_paused();
+
+        // Calculate center position (window width / 2 - toolbar width / 2)
+        let toolbar_width = 280.0;
+        let screen_width = ui.io().display_size[0];
+        let center_x = (screen_width - toolbar_width) * 0.5;
+
+        ui.window("Game Mode")
+            .position([center_x, 5.0], imgui::Condition::Always)
+            .size([toolbar_width, 70.0], imgui::Condition::Always)
+            .collapsible(false)
+            .title_bar(false)
+            .build(|| {
+            // Compact horizontal layout
+            // Show mode text
+            let mode_text = if is_editing {
+                "EDIT"
+            } else if is_paused {
+                "PAUSED"
+            } else {
+                "PLAYING"
+            };
+
+            let mode_color = if is_editing {
+                [0.5, 0.8, 1.0, 1.0]
+            } else if is_paused {
+                [1.0, 1.0, 0.0, 1.0]
+            } else {
+                [0.0, 1.0, 0.0, 1.0]
+            };
+
+            ui.text_colored(mode_color, mode_text);
+            ui.same_line();
+
+            // Small separator
+            ui.text("|");
+            ui.same_line();
+
+            // Play/Stop button
+            if is_editing {
+                if ui.button("Play") {
+                    game.game_manager.start_play_mode(game.time());
+                    game.add_notification("Play mode started!".to_string(), 2.0);
+                }
+            } else {
+                if ui.button("Stop") {
+                    game.game_manager.stop_play_mode();
+                    game.add_notification("Returned to Edit mode".to_string(), 2.0);
+                }
+            }
+
+            // Pause/Resume button (only in play mode)
+            if is_playing {
+                ui.same_line();
+                if is_paused {
+                    if ui.button("Resume") {
+                        game.game_manager.toggle_pause();
+                    }
+                } else {
+                    if ui.button("Pause") {
+                        game.game_manager.toggle_pause();
+                    }
+                }
+            }
+        });
+    }
+
+    /// Build pause menu (shown when game is paused)
+    fn build_pause_menu(ui: &Ui, game: &mut Game) {
+        // Semi-transparent overlay (skip for now - ImGui background is complex)
+
+        // Center pause menu
+        ui.window("PAUSED")
+            .position(
+                [
+                    ui.io().display_size[0] * 0.5 - 200.0,
+                    ui.io().display_size[1] * 0.5 - 150.0,
+                ],
+                imgui::Condition::Always,
+            )
+            .size([400.0, 300.0], imgui::Condition::Always)
+            .collapsible(false)
+            .build(|| {
+            ui.dummy([0.0, 20.0]);
+
+            // Title
+            let title = "GAME PAUSED";
+            let title_size = ui.calc_text_size(title);
+            ui.set_cursor_pos([200.0 - title_size[0] / 2.0, ui.cursor_pos()[1]]);
+            ui.text_colored([1.0, 1.0, 0.0, 1.0], title);
+
+            ui.dummy([0.0, 30.0]);
+
+            // Game info
+            ui.text(format!("Scenario: {}", game.game_manager.scenario_name));
+            ui.text(format!("Turn: {}", game.game_manager.current_turn));
+
+            let elapsed = game.game_manager.get_elapsed_time(game.time());
+            let minutes = (elapsed / 60.0) as u32;
+            let seconds = (elapsed % 60.0) as u32;
+            ui.text(format!("Elapsed Time: {}:{:02}", minutes, seconds));
+
+            ui.dummy([0.0, 30.0]);
+            ui.separator();
+            ui.dummy([0.0, 10.0]);
+
+            // Buttons
+            let button_width = 360.0;
+            ui.set_cursor_pos([20.0, ui.cursor_pos()[1]]);
+            if ui.button_with_size("Resume", [button_width, 40.0]) {
+                game.game_manager.toggle_pause();
+            }
+
+            ui.dummy([0.0, 10.0]);
+            ui.set_cursor_pos([20.0, ui.cursor_pos()[1]]);
+            if ui.button_with_size("Stop (Return to Edit)", [button_width, 40.0]) {
+                game.game_manager.stop_play_mode();
+                game.add_notification("Returned to Edit mode".to_string(), 2.0);
+            }
+
+            ui.dummy([0.0, 10.0]);
+            ui.set_cursor_pos([20.0, ui.cursor_pos()[1]]);
+            ui.text_colored([0.7, 0.7, 0.7, 1.0], "Press ESC to toggle pause");
+        });
+    }
+
+    /// Build Game Manager settings panel
+    fn build_game_manager_settings(ui: &Ui, game: &mut Game) {
+        GuiPanelBuilder::new(ui, "Game Manager Settings")
+            .size(400.0, 500.0)
+            .position(270.0, 10.0)
+            .build(|content| {
+                content.text("Configure scenario parameters");
+
+                let manager = &mut game.game_manager;
+
+                content
+                    .header("Scenario")
+                    .text_input("Scenario Name", &mut manager.scenario_name)
+                    .text_input("Description", &mut manager.scenario_description)
+                    .header("Game Settings")
+                    .slider_u32("Max Turns (0 = unlimited)", &mut manager.max_turns, 0, 100)
+                    .slider_f32("Turn Time Limit (0 = none)", &mut manager.turn_time_limit, 0.0, 300.0)
+                    .header("Factions")
+                    .text_input("Player Faction", &mut manager.player_faction);
+
+                // AI factions (simple display for now)
+                ui.text("AI Factions:");
+                for (i, faction) in manager.ai_factions.iter().enumerate() {
+                    ui.bullet_text(format!("{}: {}", i + 1, faction));
+                }
+
+                content.header("Victory Conditions");
+                let conditions = &mut manager.victory_conditions;
+                ui.checkbox("Eliminate All Enemies", &mut conditions.eliminate_all_enemies);
+                content.slider_u32("Survive N Turns", &mut conditions.survive_turns, 0, 50);
+
+                // Mark config as dirty if changed
+                game.mark_config_dirty();
+            });
     }
 
     /// Build the scene hierarchy UI
@@ -817,29 +984,44 @@ impl UiManager {
         // Show notifications in lower right
         Self::render_notifications(&ui, game);
 
-        // Always show scene hierarchy and transform editor
-        Self::build_scene_hierarchy(&ui, game);
-        Self::build_transform_editor(&ui, game);
+        // Show Play/Pause/Edit mode controls at top
+        Self::build_game_mode_toolbar(&ui, game);
 
-        // Show material editor if open
-        Self::build_material_editor(&ui, game);
+        // Show pause menu if in play mode and paused
+        if game.game_manager.is_playing() && game.game_manager.is_paused() {
+            Self::build_pause_menu(&ui, game);
+        }
 
-        // Show object-specific panels ONLY when that object is selected
-        let selected_type = game.scene.selected_object().map(|obj| obj.object_type.clone());
+        // Only show edit UI when in edit mode
+        if game.game_manager.is_editing() {
+            // Always show scene hierarchy and transform editor in edit mode
+            Self::build_scene_hierarchy(&ui, game);
+            Self::build_transform_editor(&ui, game);
+        }
 
-        match selected_type {
-            Some(ObjectType::Skybox) => Self::build_skybox_settings(&ui, game),
-            Some(ObjectType::Nebula) => Self::build_nebula_settings(&ui, game),
-            Some(ObjectType::DirectionalLight) => Self::build_directional_light_settings(&ui, game),
-            Some(ObjectType::SSAO) => Self::build_ssao_settings(&ui, game),
-            Some(ObjectType::Cube) | Some(ObjectType::Mesh(_)) => {
-                // Mesh/Cube objects can use materials but have no extra settings panel
-                // Material editor is accessed via Materials section in hierarchy
+        // Show edit-mode-only panels
+        if game.game_manager.is_editing() {
+            // Show material editor if open
+            Self::build_material_editor(&ui, game);
+
+            // Show object-specific panels ONLY when that object is selected
+            let selected_type = game.scene.selected_object().map(|obj| obj.object_type.clone());
+
+            match selected_type {
+                Some(ObjectType::Skybox) => Self::build_skybox_settings(&ui, game),
+                Some(ObjectType::Nebula) => Self::build_nebula_settings(&ui, game),
+                Some(ObjectType::DirectionalLight) => Self::build_directional_light_settings(&ui, game),
+                Some(ObjectType::SSAO) => Self::build_ssao_settings(&ui, game),
+                Some(ObjectType::GameManager) => Self::build_game_manager_settings(&ui, game),
+                Some(ObjectType::Cube) | Some(ObjectType::Mesh(_)) => {
+                    // Mesh/Cube objects can use materials but have no extra settings panel
+                    // Material editor is accessed via Materials section in hierarchy
+                }
+                None => {
+                    // Nothing selected - don't show any config panels
+                }
+                _ => {}
             }
-            None => {
-                // Nothing selected - don't show any config panels
-            }
-            _ => {}
         }
     }
 
@@ -918,6 +1100,7 @@ impl UiManager {
         match EngineConfig::load(CONFIG_PATH) {
             Ok(config) => {
                 game.nebula_config = config.nebula.into();
+                game.sync_nebula_transform(); // Sync position/rotation to ECS
                 println!("Nebula config loaded from {}", CONFIG_PATH);
                 game.config_dirty = false;
                 game.add_notification("Nebula config loaded".to_string(), 2.0);
@@ -1005,6 +1188,7 @@ impl UiManager {
         match SceneData::load(SCENE_PATH) {
             Ok(scene_data) => {
                 game.scene = scene_data.to_scene_graph();
+                game.sync_nebula_transform(); // Sync nebula transform to ECS
                 println!("Scene loaded from {}", SCENE_PATH);
             }
             Err(e) => {
@@ -1046,6 +1230,9 @@ impl UiManager {
         if game.scene.find_by_type(crate::scene::ObjectType::SSAO).is_none() {
             game.scene.add_object("SSAO".to_string(), crate::scene::ObjectType::SSAO);
         }
+
+        // Sync nebula transform from loaded scene to ECS
+        game.sync_nebula_transform();
 
         println!("Scene initialized from {}", SCENE_PATH);
     }

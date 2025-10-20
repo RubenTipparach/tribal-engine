@@ -151,15 +151,20 @@ void main() {
     // Compute inverse view-projection matrix
     mat4 invViewProj = inverse(ubo.proj * ubo.view);
 
-    // Ray origin is camera position
+    // Ray origin is camera position in world space
     vec3 ro = ubo.viewPos;
 
     // Compute far point in world space
     vec4 farPoint = invViewProj * vec4(ndc, 1.0, 1.0);
     farPoint /= farPoint.w;
 
-    // Ray direction from camera to far point
+    // Ray direction from camera to far point in world space
     vec3 rd = normalize(farPoint.xyz - ro);
+
+    // Transform ray to nebula's local space using inverse model matrix
+    mat4 invModel = inverse(ubo.model);
+    ro = (invModel * vec4(ro, 1.0)).xyz;
+    rd = normalize((invModel * vec4(rd, 0.0)).xyz);
 
     // Apply scale by moving camera position away from origin
     ro /= ubo.scale;
@@ -191,8 +196,9 @@ void main() {
             // Check if we've reached geometry depth
             // Linearize both depths for comparison
             // We need to convert raymarch distance to depth buffer value
-            // Project current raymarch position to clip space
-            vec4 clipPos = ubo.proj * ubo.view * vec4(pos * ubo.scale, 1.0);
+            // Transform position back to world space, then project to clip space
+            vec3 worldPos = (ubo.model * vec4(pos * ubo.scale, 1.0)).xyz;
+            vec4 clipPos = ubo.proj * ubo.view * vec4(worldPos, 1.0);
             float raymarch_depth = clipPos.z / clipPos.w;
 
             // If we've passed the geometry, stop raymarching

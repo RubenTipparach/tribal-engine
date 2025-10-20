@@ -63,24 +63,24 @@ impl From<&NebulaConfig> for crate::config::NebulaConfigData {
 impl Default for NebulaConfig {
     fn default() -> Self {
         Self {
-            // Basic parameters (keep existing defaults)
-            zoom: 0.01,
+            // Basic parameters - 1000x scale!
+            zoom: 0.00001,  // Much smaller zoom for larger scale
             density: 2.0,
             brightness: 1.0,
-            scale: 20.0,
-            
+            scale: 20000.0,  // 1000x scale (was 20.0)
+
             // Color parameters (from shader defaults)
             color_center: Vec3::new(0.8, 1.0, 1.0) * 7.0,
             color_edge: Vec3::new(0.48, 0.53, 0.5) * 1.5,
             color_density_low: Vec3::new(1.0, 0.9, 0.8),
             color_density_high: Vec3::new(0.4, 0.15, 0.1),
-            
+
             // Light parameters (from shader)
             light_color: Vec3::new(1.0, 0.5, 0.25),
             light_intensity: 1.0 / 30.0,
 
-            // Raymarch distance - default to 10.0 (original shader value)
-            max_distance: 10.0,
+            // Raymarch distance - 1000x larger
+            max_distance: 10000.0,  // Was 10.0
         }
     }
 }
@@ -141,9 +141,10 @@ impl NebulaRenderer {
         proj: Mat4,
         view_pos: Vec3,
         config: &NebulaConfig,
+        model: Mat4,  // Nebula transform matrix
     ) -> NebulaUniformBufferObject {
         NebulaUniformBufferObject {
-            model: Mat4::IDENTITY,
+            model,
             view,
             proj,
             view_pos,

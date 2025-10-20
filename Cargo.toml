@@ -17,5 +17,10 @@ imgui-winit-support = "0.12"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
+# ECS and Physics for large-scale space battles
+hecs = "0.10"
+rapier3d = { version = "0.22", features = ["serde-serialize", "enhanced-determinism"] }
+nalgebra = "0.33"  # Rapier uses nalgebra for math
+
 [profile.dev]
 opt-level = 2

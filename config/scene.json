@@ -2,43 +2,19 @@
   "objects": [
     {
       "id": 0,
-      "name": "Cube",
-      "object_type": "Cube",
-      "transform": {
-        "position": [
-          -7.105397,
-          0.023701072,
-          4.178734
-        ],
-        "rotation": [
-          0.0,
-          0.0,
-          0.0,
-          1.0
-        ],
-        "scale": [
-          2.7011123,
-          0.8321736,
-          1.8068653
-        ]
-      },
-      "visible": true
-    },
-    {
-      "id": 1,
       "name": "Cube 1",
       "object_type": "Cube",
       "transform": {
         "position": [
           0.0,
           0.0,
-          -4.389787
+          0.0
         ],
         "rotation": [
           0.0,
           0.0,
-          0.0030493152,
-          0.9999953
+          0.0,
+          1.0
         ],
         "scale": [
           1.0,
@@ -49,7 +25,7 @@
       "visible": true
     },
     {
-      "id": 2,
+      "id": 1,
       "name": "Cube 2",
       "object_type": "Cube",
       "transform": {
@@ -73,6 +49,30 @@
       "visible": true
     },
     {
+      "id": 2,
+      "name": "Directional Light",
+      "object_type": "DirectionalLight",
+      "transform": {
+        "position": [
+          0.0,
+          0.0,
+          27.166307
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "visible": true
+    },
+    {
       "id": 3,
       "name": "Fed Cruiser",
       "object_type": {
@@ -80,8 +80,8 @@
       },
       "transform": {
         "position": [
-          -0.0000603199,
-          -2.582229,
+          0.0,
+          3.0,
           0.0
         ],
         "rotation": [
@@ -100,13 +100,13 @@
     },
     {
       "id": 4,
-      "name": "Nebula",
-      "object_type": "Nebula",
+      "name": "Game Manager",
+      "object_type": "GameManager",
       "transform": {
         "position": [
           0.0,
           0.0,
-          0.0
+          17.657024
         ],
         "rotation": [
           0.0,
@@ -124,13 +124,13 @@
     },
     {
       "id": 5,
-      "name": "Skybox",
-      "object_type": "Skybox",
+      "name": "SSAO",
+      "object_type": "SSAO",
       "transform": {
         "position": [
           0.0,
           0.0,
-          0.0
+          25.933388
         ],
         "rotation": [
           0.0,
@@ -148,13 +148,13 @@
     },
     {
       "id": 6,
-      "name": "Cube Copy",
-      "object_type": "Cube",
+      "name": "Star (Sun)",
+      "object_type": "Sphere",
       "transform": {
         "position": [
-          -4.639641,
-          0.5237011,
-          7.9555707
+          1.6189001,
+          660.12646,
+          705.7098
         ],
         "rotation": [
           0.0,
@@ -163,41 +163,41 @@
           1.0
         ],
         "scale": [
-          2.7011123,
-          0.8321736,
-          1.8068653
+          50.0,
+          50.0,
+          50.0
         ]
       },
       "visible": true
     },
     {
       "id": 7,
-      "name": "Directional Light",
-      "object_type": "DirectionalLight",
+      "name": "Nebula",
+      "object_type": "Nebula",
       "transform": {
         "position": [
-          0.0,
-          0.0,
-          0.0
+          1.6189001,
+          660.12646,
+          705.7098
         ],
         "rotation": [
           0.0,
           0.0,
-          0.42808348,
-          0.9037366
+          0.0,
+          1.0
         ],
         "scale": [
-          1.0,
-          1.0,
-          1.0
+          200.0,
+          200.0,
+          200.0
         ]
       },
       "visible": true
     },
     {
       "id": 8,
-      "name": "SSAO",
-      "object_type": "SSAO",
+      "name": "Skybox",
+      "object_type": "Skybox",
       "transform": {
         "position": [
           0.0,

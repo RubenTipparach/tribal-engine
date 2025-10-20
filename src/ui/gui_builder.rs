@@ -103,6 +103,22 @@ impl<'a> GuiContentBuilder<'a> {
         self
     }
 
+    pub fn slider_vec3(
+        &mut self,
+        label: &str,
+        value: &mut Vec3,
+        min: f32,
+        max: f32,
+    ) -> &mut Self {
+        self.ui.text(label);
+        let mut arr = [value.x, value.y, value.z];
+        self.ui.slider("X", min, max, &mut arr[0]);
+        self.ui.slider("Y", min, max, &mut arr[1]);
+        self.ui.slider("Z", min, max, &mut arr[2]);
+        *value = Vec3::new(arr[0], arr[1], arr[2]);
+        self
+    }
+
     pub fn color_picker(&mut self, label: &str, color: &mut Vec3) -> &mut Self {
         let mut color_array = [color.x, color.y, color.z];
         if self.ui.color_edit3(label, &mut color_array) {
@@ -158,6 +174,20 @@ impl<'a> GuiContentBuilder<'a> {
             *value_deg += 360.0;
         }
 
+        self
+    }
+
+    /// Input field for text/string values
+    pub fn text_input(&mut self, label: &str, value: &mut String) -> &mut Self {
+        self.ui.input_text(label, value).build();
+        self
+    }
+
+    /// Slider for u32 values
+    pub fn slider_u32(&mut self, label: &str, value: &mut u32, min: u32, max: u32) -> &mut Self {
+        let mut value_i32 = *value as i32;
+        self.ui.slider(label, min as i32, max as i32, &mut value_i32);
+        *value = value_i32 as u32;
         self
     }
 
