@@ -166,15 +166,51 @@
         
         <div class="controls">
             <div class="control-group">
+                <label for="flightMode">Flight Mode</label>
+                <select id="flightMode" onchange="toggleFlightMode()">
+                    <option value="coupled">Coupled (Main Thruster)</option>
+                    <option value="decoupled">Decoupled (Maneuvering)</option>
+                </select>
+            </div>
+
+            <!-- Coupled Mode Controls -->
+            <div class="control-group coupled-control">
                 <label for="maxAccel">Max Acceleration (m/s²)</label>
                 <input type="number" id="maxAccel" value="2" step="0.5" min="0.5" max="10">
             </div>
-            
-            <div class="control-group">
+
+            <div class="control-group coupled-control">
                 <label for="maxDecel">Max Deceleration (m/s²)</label>
                 <input type="number" id="maxDecel" value="3" step="0.5" min="0.5" max="10">
             </div>
-            
+
+            <!-- Decoupled Mode Controls -->
+            <div class="control-group decoupled-control" style="display: none;">
+                <label for="forwardThrust">Forward Thrust (m/s²)</label>
+                <input type="number" id="forwardThrust" value="2" step="0.1" min="0" max="5">
+            </div>
+
+            <div class="control-group decoupled-control" style="display: none;">
+                <label for="backwardThrust">Backward Thrust (m/s²)</label>
+                <input type="number" id="backwardThrust" value="2" step="0.1" min="0" max="5">
+            </div>
+
+            <div class="control-group decoupled-control" style="display: none;">
+                <label for="leftThrust">Left Thrust (m/s²)</label>
+                <input type="number" id="leftThrust" value="2" step="0.1" min="0" max="5">
+            </div>
+
+            <div class="control-group decoupled-control" style="display: none;">
+                <label for="rightThrust">Right Thrust (m/s²)</label>
+                <input type="number" id="rightThrust" value="2" step="0.1" min="0" max="5">
+            </div>
+
+            <div class="control-group decoupled-control" style="display: none;">
+                <label for="targetRotation">Target Rotation (relative °)</label>
+                <input type="range" id="targetRotation" min="-100" max="100" value="0" step="1">
+                <span class="value-display" id="targetRotationDisplay">0° (current)</span>
+            </div>
+
             <div class="control-group">
                 <label for="maxSpeed">Max Speed (m/s)</label>
                 <input type="number" id="maxSpeed" value="20" step="1" min="1" max="50">
@@ -195,7 +231,12 @@
                 <label for="initialVy">Initial Velocity Y (m/s)</label>
                 <input type="number" id="initialVy" value="0" step="1" min="-50" max="50">
             </div>
-            
+
+            <div class="control-group">
+                <label for="speedMagnitude">Speed Magnitude (m/s)</label>
+                <span class="value-display" id="speedMagnitude" style="font-size: 1.2em; color: #667eea;">0.0 m/s</span>
+            </div>
+
             <div class="control-group">
                 <label for="gridDensity">Grid Density</label>
                 <input type="range" id="gridDensity" min="10" max="100" value="30" step="5">
@@ -296,14 +337,56 @@
         document.getElementById('turningRange').addEventListener('input', (e) => {
             document.getElementById('turningDisplay').textContent = e.target.value + '°/s';
         });
-        
+
         document.getElementById('gridDensity').addEventListener('input', (e) => {
             document.getElementById('densityDisplay').textContent = e.target.value;
         });
-        
+
         document.getElementById('initialAngle').addEventListener('input', (e) => {
             document.getElementById('angleDisplay').textContent = e.target.value + '°';
         });
+
+        document.getElementById('targetRotation').addEventListener('input', (e) => {
+            const currentAngle = parseFloat(document.getElementById('initialAngle').value);
+            const relativeRotation = parseFloat(e.target.value);
+            const targetAngle = currentAngle + relativeRotation;
+            document.getElementById('targetRotationDisplay').textContent = `${relativeRotation}° (target: ${Math.round(targetAngle)}°)`;
+        });
+
+        // Update speed magnitude display when velocity changes
+        document.getElementById('initialVx').addEventListener('input', updateSpeedMagnitude);
+        document.getElementById('initialVy').addEventListener('input', updateSpeedMagnitude);
+
+        function updateSpeedMagnitude() {
+            const vx = parseFloat(document.getElementById('initialVx').value) || 0;
+            const vy = parseFloat(document.getElementById('initialVy').value) || 0;
+            const speed = Math.sqrt(vx * vx + vy * vy);
+            document.getElementById('speedMagnitude').textContent = `${speed.toFixed(1)} m/s`;
+        }
+
+        function toggleFlightMode() {
+            const mode = document.getElementById('flightMode').value;
+            const coupledControls = document.querySelectorAll('.coupled-control');
+            const decoupledControls = document.querySelectorAll('.decoupled-control');
+
+            if (mode === 'coupled') {
+                coupledControls.forEach(el => el.style.display = 'flex');
+                decoupledControls.forEach(el => el.style.display = 'none');
+            } else {
+                coupledControls.forEach(el => el.style.display = 'none');
+                decoupledControls.forEach(el => el.style.display = 'flex');
+            }
+
+            // Reset target rotation slider when switching modes
+            document.getElementById('targetRotation').value = 0;
+            const currentAngle = parseFloat(document.getElementById('initialAngle').value);
+            document.getElementById('targetRotationDisplay').textContent = `0° (target: ${Math.round(currentAngle)}°)`;
+
+            // Recalculate grid with new mode if grid was previously calculated
+            if (gridCalculated) {
+                calculate();
+            }
+        }
         
         // Add click handler
         canvas.addEventListener('click', handleCanvasClick);
@@ -317,6 +400,128 @@
         canvas.addEventListener('mouseup', handlePanEnd);
         canvas.addEventListener('mouseleave', handlePanEnd);
         
+        function simulatePathToTargetDecoupled(targetX, targetY, params) {
+            const {
+                forwardThrust,
+                backwardThrust,
+                leftThrust,
+                rightThrust,
+                maxSpeed,
+                rotationRate,
+                timeLimit,
+                initialHeading,
+                targetHeading,
+                initialVx,
+                initialVy
+            } = params;
+
+            const rotationRateRad = rotationRate * Math.PI / 180;
+            const initialHeadingRad = initialHeading * Math.PI / 180;
+            const targetHeadingRad = targetHeading * Math.PI / 180;
+
+            const numSegments = 10;
+            const segmentTime = timeLimit / numSegments;
+
+            // Initialize state
+            let x = 0, y = 0;
+            let vx = initialVx, vy = initialVy;
+            let heading = initialHeadingRad;
+
+            const path = [{x, y, vx, vy, heading, t: 0}];
+
+            // Calculate total rotation needed
+            let totalRotationNeeded = targetHeadingRad - initialHeadingRad;
+            while (totalRotationNeeded > Math.PI) totalRotationNeeded -= 2 * Math.PI;
+            while (totalRotationNeeded < -Math.PI) totalRotationNeeded += 2 * Math.PI;
+
+            // Distribute rotation evenly across segments
+            const rotationPerSegment = totalRotationNeeded / numSegments;
+            const maxRotationPerSegment = rotationRateRad * segmentTime;
+
+            for (let seg = 1; seg <= numSegments; seg++) {
+                // Update heading (independent of velocity)
+                let actualRotation = rotationPerSegment;
+                actualRotation = Math.max(-maxRotationPerSegment, Math.min(maxRotationPerSegment, actualRotation));
+                heading += actualRotation;
+
+                // Calculate remaining distance and time
+                const dx = targetX - x;
+                const dy = targetY - y;
+                const distToTarget = Math.sqrt(dx * dx + dy * dy);
+                const remainingTime = (numSegments - seg + 1) * segmentTime;
+
+                // Calculate desired velocity change in world frame
+                const desiredVx = dx / remainingTime;
+                const desiredVy = dy / remainingTime;
+                const neededDvx = desiredVx - vx;
+                const neededDvy = desiredVy - vy;
+
+                // Convert needed acceleration to ship's local frame
+                const cosH = Math.cos(heading);
+                const sinH = Math.sin(heading);
+                const localForward = neededDvx * cosH + neededDvy * sinH;
+                const localRight = -neededDvx * sinH + neededDvy * cosH;
+
+                // Determine thrust based on needed acceleration
+                let thrustForward = 0;
+                let thrustRight = 0;
+
+                if (localForward > 0) {
+                    thrustForward = Math.min(localForward / segmentTime, forwardThrust);
+                } else {
+                    thrustForward = Math.max(localForward / segmentTime, -backwardThrust);
+                }
+
+                if (localRight > 0) {
+                    thrustRight = Math.min(localRight / segmentTime, rightThrust);
+                } else {
+                    thrustRight = Math.max(localRight / segmentTime, -leftThrust);
+                }
+
+                // Convert thrust back to world frame
+                const worldAccelX = thrustForward * cosH - thrustRight * sinH;
+                const worldAccelY = thrustForward * sinH + thrustRight * cosH;
+
+                // Update velocity
+                vx += worldAccelX * segmentTime;
+                vy += worldAccelY * segmentTime;
+
+                // Apply speed limit
+                const currentSpeed = Math.sqrt(vx * vx + vy * vy);
+                if (currentSpeed > maxSpeed) {
+                    vx = vx * maxSpeed / currentSpeed;
+                    vy = vy * maxSpeed / currentSpeed;
+                }
+
+                // Update position
+                x += vx * segmentTime;
+                y += vy * segmentTime;
+
+                path.push({
+                    x, y,
+                    vx, vy,
+                    heading,
+                    t: seg * segmentTime,
+                    thrustForward,
+                    thrustRight
+                });
+            }
+
+            const finalDist = Math.sqrt((targetX - x) * (targetX - x) + (targetY - y) * (targetY - y));
+            const reachThreshold = 5.0;
+
+            return {
+                reached: finalDist <= reachThreshold,
+                path: path,
+                finalHeading: heading,
+                finalX: x,
+                finalY: y,
+                targetX: targetX,
+                targetY: targetY,
+                finalDistance: finalDist
+            };
+        }
+
         function simulatePathToTarget(targetX, targetY, params) {
             const {
                 maxAccel,
@@ -345,7 +550,6 @@
             let x = 0, y = 0;
             let vx = initialVx, vy = initialVy;
             let heading = initialHeadingRad;
-            let currentSpeed = Math.sqrt(vx * vx + vy * vy);
 
             // Create path array
             const path = [{x, y, vx, vy, heading, t: 0}];
@@ -371,40 +575,45 @@
                 let turnThisSegment = headingError / (numSegments - seg + 1); // Distribute remaining turn
                 turnThisSegment = Math.max(-maxTurnThisSegment, Math.min(maxTurnThisSegment, turnThisSegment));
 
-                // Update heading
+                // Update heading (rotate gradually toward target)
                 heading += turnThisSegment;
 
-                // Calculate desired speed to reach target in remaining time
-                let desiredSpeed = distToTarget / remainingTime;
+                // Calculate desired velocity in heading direction
+                const desiredSpeed = Math.min(distToTarget / remainingTime, maxSpeed);
+                const desiredVx = desiredSpeed * Math.cos(heading);
+                const desiredVy = desiredSpeed * Math.sin(heading);
 
-                // Apply acceleration/deceleration constraints
-                if (desiredSpeed > currentSpeed) {
-                    // Need to accelerate
-                    currentSpeed = Math.min(
-                        currentSpeed + maxAccel * segmentTime,
-                        desiredSpeed,
-                        maxSpeed
-                    );
-                } else {
-                    // Need to decelerate
-                    currentSpeed = Math.max(
-                        currentSpeed - maxDecel * segmentTime,
-                        desiredSpeed,
-                        0
-                    );
+                // Calculate velocity change needed
+                const dvx = desiredVx - vx;
+                const dvy = desiredVy - vy;
+                const dvMagnitude = Math.sqrt(dvx * dvx + dvy * dvy);
+
+                // Apply acceleration constraints to velocity change
+                let maxDv;
+                if (dvMagnitude > 0.001) {
+                    // Check if we're accelerating or decelerating
+                    const currentSpeed = Math.sqrt(vx * vx + vy * vy);
+                    const newSpeed = Math.sqrt(desiredVx * desiredVx + desiredVy * desiredVy);
+
+                    if (newSpeed > currentSpeed) {
+                        maxDv = maxAccel * segmentTime;
+                    } else {
+                        maxDv = maxDecel * segmentTime;
+                    }
+
+                    // Limit velocity change by acceleration constraint
+                    if (dvMagnitude > maxDv) {
+                        vx += (dvx / dvMagnitude) * maxDv;
+                        vy += (dvy / dvMagnitude) * maxDv;
+                    } else {
+                        vx = desiredVx;
+                        vy = desiredVy;
+                    }
                 }
 
-                // Calculate distance traveled in this segment
-                const avgSpeed = currentSpeed;
-                const distance = avgSpeed * segmentTime;
-
-                // Update position (move in current heading direction)
-                x += distance * Math.cos(heading);
-                y += distance * Math.sin(heading);
-
-                // Update velocity components
-                vx = currentSpeed * Math.cos(heading);
-                vy = currentSpeed * Math.sin(heading);
+                // Move using current velocity
+                x += vx * segmentTime;
+                y += vy * segmentTime;
 
                 // Add to path
                 path.push({
@@ -566,21 +775,46 @@
             const worldX = (clickX - centerX - panX) / scale - shipWorldX;
             const worldY = (clickY - centerY - panY) / scale - shipWorldY;
             
-            // Get parameters
-            const params = {
-                maxAccel: parseFloat(document.getElementById('maxAccel').value),
-                maxDecel: parseFloat(document.getElementById('maxDecel').value),
-                maxSpeed: parseFloat(document.getElementById('maxSpeed').value),
-                maxTurnRate: parseFloat(document.getElementById('turningRange').value),
-                timeLimit: parseFloat(document.getElementById('timeInterval').value),
-                initialHeading: parseFloat(document.getElementById('initialAngle').value),
-                initialVx: parseFloat(document.getElementById('initialVx').value),
-                initialVy: parseFloat(document.getElementById('initialVy').value),
-                pathTimeStep: parseFloat(document.getElementById('pathTimeStep').value)
-            };
-            
-            // Simulate path to this point
-            const result = simulatePathToTarget(worldX, worldY, params);
+            // Get parameters based on flight mode
+            const flightMode = document.getElementById('flightMode').value;
+            let params, result;
+
+            if (flightMode === 'decoupled') {
+                const currentHeading = parseFloat(document.getElementById('initialAngle').value);
+                const relativeRotation = parseFloat(document.getElementById('targetRotation').value);
+                const targetHeading = currentHeading + relativeRotation;
+
+                params = {
+                    forwardThrust: parseFloat(document.getElementById('forwardThrust').value),
+                    backwardThrust: parseFloat(document.getElementById('backwardThrust').value),
+                    leftThrust: parseFloat(document.getElementById('leftThrust').value),
+                    rightThrust: parseFloat(document.getElementById('rightThrust').value),
+                    maxSpeed: parseFloat(document.getElementById('maxSpeed').value),
+                    rotationRate: parseFloat(document.getElementById('turningRange').value),
+                    timeLimit: parseFloat(document.getElementById('timeInterval').value),
+                    initialHeading: currentHeading,
+                    targetHeading: targetHeading,
+                    initialVx: parseFloat(document.getElementById('initialVx').value),
+                    initialVy: parseFloat(document.getElementById('initialVy').value)
+                };
+
+                result = simulatePathToTargetDecoupled(worldX, worldY, params);
+            } else {
+                params = {
+                    maxAccel: parseFloat(document.getElementById('maxAccel').value),
+                    maxDecel: parseFloat(document.getElementById('maxDecel').value),
+                    maxSpeed: parseFloat(document.getElementById('maxSpeed').value),
+                    maxTurnRate: parseFloat(document.getElementById('turningRange').value),
+                    timeLimit: parseFloat(document.getElementById('timeInterval').value),
+                    initialHeading: parseFloat(document.getElementById('initialAngle').value),
+                    initialVx: parseFloat(document.getElementById('initialVx').value),
+                    initialVy: parseFloat(document.getElementById('initialVy').value),
+                    pathTimeStep: parseFloat(document.getElementById('pathTimeStep').value)
+                };
+
+                result = simulatePathToTarget(worldX, worldY, params);
+            }
+
             currentPath = result;
 
             // Log the full path details for debugging
@@ -695,27 +929,49 @@
                 const x2 = centerX + (shipWorldX + path[i + 1].x) * scale + panX;
                 const y2 = centerY + (shipWorldY + path[i + 1].y) * scale + panY;
 
-                const heading1 = path[i].heading;
-                const heading2 = path[i + 1].heading;
-
                 // Draw bezier curve segment
                 ctx.strokeStyle = `rgba(65, 105, 225, ${0.7 - i * 0.3 / path.length})`;
                 ctx.lineWidth = 3;
                 ctx.beginPath();
                 ctx.moveTo(x1, y1);
 
-                // Calculate control points based on headings
-                // The control point distance is proportional to segment length
+                // Calculate control points based on VELOCITY (not heading)
+                // This makes the path curve based on movement direction, not ship rotation
                 const segmentDist = Math.sqrt((x2 - x1) * (x2 - x1) + (y2 - y1) * (y2 - y1));
                 const controlDist = segmentDist * 0.33; // Control points at 1/3 of segment length
 
-                // Control point 1: extends from point 1 in the direction of heading1
-                const cp1x = x1 + Math.cos(heading1) * controlDist;
-                const cp1y = y1 + Math.sin(heading1) * controlDist;
+                // Get velocity directions
+                const vx1 = path[i].vx;
+                const vy1 = path[i].vy;
+                const vx2 = path[i + 1].vx;
+                const vy2 = path[i + 1].vy;
 
-                // Control point 2: extends backward from point 2 in the direction of heading2
-                const cp2x = x2 - Math.cos(heading2) * controlDist;
-                const cp2y = y2 - Math.sin(heading2) * controlDist;
+                const speed1 = Math.sqrt(vx1 * vx1 + vy1 * vy1);
+                const speed2 = Math.sqrt(vx2 * vx2 + vy2 * vy2);
+
+                // Control point 1: extends from point 1 in the direction of velocity1
+                let cp1x, cp1y;
+                if (speed1 > 0.01) {
+                    const velAngle1 = Math.atan2(vy1, vx1);
+                    cp1x = x1 + Math.cos(velAngle1) * controlDist;
+                    cp1y = y1 + Math.sin(velAngle1) * controlDist;
+                } else {
+                    // If no velocity, use segment direction
+                    cp1x = x1 + (x2 - x1) * 0.33;
+                    cp1y = y1 + (y2 - y1) * 0.33;
+                }
+
+                // Control point 2: extends backward from point 2 in the direction of velocity2
+                let cp2x, cp2y;
+                if (speed2 > 0.01) {
+                    const velAngle2 = Math.atan2(vy2, vx2);
+                    cp2x = x2 - Math.cos(velAngle2) * controlDist;
+                    cp2y = y2 - Math.sin(velAngle2) * controlDist;
+                } else {
+                    // If no velocity, use segment direction
+                    cp2x = x1 + (x2 - x1) * 0.67;
+                    cp2y = y1 + (y2 - y1) * 0.67;
+                }
 
                 // Draw cubic bezier curve
                 ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, x2, y2);
@@ -851,6 +1107,9 @@
             // Use same world grid size as calculate function
             const worldGridSize = 400; // meters
             const gridStep = worldGridSize / gridDensity;
+
+            // Update speed magnitude display
+            updateSpeedMagnitude();
             
             // Draw grid lines
             ctx.strokeStyle = '#e0e0e0';
@@ -1023,16 +1282,36 @@
                     const x2 = centerX + (cumulativeWorldX + path[i + 1].x) * scale + panX;
                     const y2 = centerY + (cumulativeWorldY + path[i + 1].y) * scale + panY;
 
-                    const heading1 = path[i].heading;
-                    const heading2 = path[i + 1].heading;
-
                     const segmentDist = Math.sqrt((x2 - x1) * (x2 - x1) + (y2 - y1) * (y2 - y1));
                     const controlDist = segmentDist * 0.33;
 
-                    const cp1x = x1 + Math.cos(heading1) * controlDist;
-                    const cp1y = y1 + Math.sin(heading1) * controlDist;
-                    const cp2x = x2 - Math.cos(heading2) * controlDist;
-                    const cp2y = y2 - Math.sin(heading2) * controlDist;
+                    // Use velocity for control points
+                    const vx1 = path[i].vx;
+                    const vy1 = path[i].vy;
+                    const vx2 = path[i + 1].vx;
+                    const vy2 = path[i + 1].vy;
+
+                    const speed1 = Math.sqrt(vx1 * vx1 + vy1 * vy1);
+                    const speed2 = Math.sqrt(vx2 * vx2 + vy2 * vy2);
+
+                    let cp1x, cp1y, cp2x, cp2y;
+                    if (speed1 > 0.01) {
+                        const velAngle1 = Math.atan2(vy1, vx1);
+                        cp1x = x1 + Math.cos(velAngle1) * controlDist;
+                        cp1y = y1 + Math.sin(velAngle1) * controlDist;
+                    } else {
+                        cp1x = x1 + (x2 - x1) * 0.33;
+                        cp1y = y1 + (y2 - y1) * 0.33;
+                    }
+
+                    if (speed2 > 0.01) {
+                        const velAngle2 = Math.atan2(vy2, vx2);
+                        cp2x = x2 - Math.cos(velAngle2) * controlDist;
+                        cp2y = y2 - Math.sin(velAngle2) * controlDist;
+                    } else {
+                        cp2x = x1 + (x2 - x1) * 0.67;
+                        cp2y = y1 + (y2 - y1) * 0.67;
+                    }
 
                     ctx.beginPath();
                     ctx.moveTo(x1, y1);
@@ -1130,16 +1409,36 @@
                 const x2 = centerX + (shipWorldX + path[i + 1].x) * scale + panX;
                 const y2 = centerY + (shipWorldY + path[i + 1].y) * scale + panY;
 
-                const heading1 = path[i].heading;
-                const heading2 = path[i + 1].heading;
-
                 const segmentDist = Math.sqrt((x2 - x1) * (x2 - x1) + (y2 - y1) * (y2 - y1));
                 const controlDist = segmentDist * 0.33;
 
-                const cp1x = x1 + Math.cos(heading1) * controlDist;
-                const cp1y = y1 + Math.sin(heading1) * controlDist;
-                const cp2x = x2 - Math.cos(heading2) * controlDist;
-                const cp2y = y2 - Math.sin(heading2) * controlDist;
+                // Use velocity for control points
+                const vx1 = path[i].vx;
+                const vy1 = path[i].vy;
+                const vx2 = path[i + 1].vx;
+                const vy2 = path[i + 1].vy;
+
+                const speed1 = Math.sqrt(vx1 * vx1 + vy1 * vy1);
+                const speed2 = Math.sqrt(vx2 * vx2 + vy2 * vy2);
+
+                let cp1x, cp1y, cp2x, cp2y;
+                if (speed1 > 0.01) {
+                    const velAngle1 = Math.atan2(vy1, vx1);
+                    cp1x = x1 + Math.cos(velAngle1) * controlDist;
+                    cp1y = y1 + Math.sin(velAngle1) * controlDist;
+                } else {
+                    cp1x = x1 + (x2 - x1) * 0.33;
+                    cp1y = y1 + (y2 - y1) * 0.33;
+                }
+
+                if (speed2 > 0.01) {
+                    const velAngle2 = Math.atan2(vy2, vx2);
+                    cp2x = x2 - Math.cos(velAngle2) * controlDist;
+                    cp2y = y2 - Math.sin(velAngle2) * controlDist;
+                } else {
+                    cp2x = x1 + (x2 - x1) * 0.67;
+                    cp2y = y1 + (y2 - y1) * 0.67;
+                }
 
                 ctx.strokeStyle = 'rgba(65, 105, 225, 0.7)';
                 ctx.lineWidth = 3;
@@ -1157,16 +1456,36 @@
                 const x2 = centerX + (shipWorldX + path[i + 1].x) * scale + panX;
                 const y2 = centerY + (shipWorldY + path[i + 1].y) * scale + panY;
 
-                const heading1 = path[i].heading;
-                const heading2 = path[i + 1].heading;
-
                 const segmentDist = Math.sqrt((x2 - x1) * (x2 - x1) + (y2 - y1) * (y2 - y1));
                 const controlDist = segmentDist * 0.33;
 
-                const cp1x = x1 + Math.cos(heading1) * controlDist;
-                const cp1y = y1 + Math.sin(heading1) * controlDist;
-                const cp2x = x2 - Math.cos(heading2) * controlDist;
-                const cp2y = y2 - Math.sin(heading2) * controlDist;
+                // Use velocity for control points
+                const vx1 = path[i].vx;
+                const vy1 = path[i].vy;
+                const vx2 = path[i + 1].vx;
+                const vy2 = path[i + 1].vy;
+
+                const speed1 = Math.sqrt(vx1 * vx1 + vy1 * vy1);
+                const speed2 = Math.sqrt(vx2 * vx2 + vy2 * vy2);
+
+                let cp1x, cp1y, cp2x, cp2y;
+                if (speed1 > 0.01) {
+                    const velAngle1 = Math.atan2(vy1, vx1);
+                    cp1x = x1 + Math.cos(velAngle1) * controlDist;
+                    cp1y = y1 + Math.sin(velAngle1) * controlDist;
+                } else {
+                    cp1x = x1 + (x2 - x1) * 0.33;
+                    cp1y = y1 + (y2 - y1) * 0.33;
+                }
+
+                if (speed2 > 0.01) {
+                    const velAngle2 = Math.atan2(vy2, vx2);
+                    cp2x = x2 - Math.cos(velAngle2) * controlDist;
+                    cp2y = y2 - Math.sin(velAngle2) * controlDist;
+                } else {
+                    cp2x = x1 + (x2 - x1) * 0.67;
+                    cp2y = y1 + (y2 - y1) * 0.67;
+                }
 
                 // Draw partial bezier curve
                 ctx.strokeStyle = 'rgba(65, 105, 225, 0.7)';
@@ -1190,6 +1509,10 @@
                 const mt = 1 - t;
                 const boatX = mt * mt * mt * x1 + 3 * mt * mt * t * cp1x + 3 * mt * t * t * cp2x + t * t * t * x2;
                 const boatY = mt * mt * mt * y1 + 3 * mt * mt * t * cp1y + 3 * mt * t * t * cp2y + t * t * t * y2;
+
+                // Get actual heading from path data
+                const heading1 = path[i].heading;
+                const heading2 = path[i + 1].heading;
 
                 // Interpolate heading
                 const boatHeading = heading1 + (heading2 - heading1) * segmentProgress;
@@ -1360,16 +1683,36 @@
                 const x2 = centerX + (replayShipState.cumulativeWorldX + path[i + 1].x) * scale + panX;
                 const y2 = centerY + (replayShipState.cumulativeWorldY + path[i + 1].y) * scale + panY;
 
-                const heading1 = path[i].heading;
-                const heading2 = path[i + 1].heading;
-
                 const segmentDist = Math.sqrt((x2 - x1) * (x2 - x1) + (y2 - y1) * (y2 - y1));
                 const controlDist = segmentDist * 0.33;
 
-                const cp1x = x1 + Math.cos(heading1) * controlDist;
-                const cp1y = y1 + Math.sin(heading1) * controlDist;
-                const cp2x = x2 - Math.cos(heading2) * controlDist;
-                const cp2y = y2 - Math.sin(heading2) * controlDist;
+                // Use velocity for control points
+                const vx1 = path[i].vx;
+                const vy1 = path[i].vy;
+                const vx2 = path[i + 1].vx;
+                const vy2 = path[i + 1].vy;
+
+                const speed1 = Math.sqrt(vx1 * vx1 + vy1 * vy1);
+                const speed2 = Math.sqrt(vx2 * vx2 + vy2 * vy2);
+
+                let cp1x, cp1y, cp2x, cp2y;
+                if (speed1 > 0.01) {
+                    const velAngle1 = Math.atan2(vy1, vx1);
+                    cp1x = x1 + Math.cos(velAngle1) * controlDist;
+                    cp1y = y1 + Math.sin(velAngle1) * controlDist;
+                } else {
+                    cp1x = x1 + (x2 - x1) * 0.33;
+                    cp1y = y1 + (y2 - y1) * 0.33;
+                }
+
+                if (speed2 > 0.01) {
+                    const velAngle2 = Math.atan2(vy2, vx2);
+                    cp2x = x2 - Math.cos(velAngle2) * controlDist;
+                    cp2y = y2 - Math.sin(velAngle2) * controlDist;
+                } else {
+                    cp2x = x1 + (x2 - x1) * 0.67;
+                    cp2y = y1 + (y2 - y1) * 0.67;
+                }
 
                 ctx.strokeStyle = 'rgba(255, 165, 0, 0.7)'; // Orange for replay
                 ctx.lineWidth = 3;
@@ -1387,16 +1730,36 @@
                 const x2 = centerX + (replayShipState.cumulativeWorldX + path[i + 1].x) * scale + panX;
                 const y2 = centerY + (replayShipState.cumulativeWorldY + path[i + 1].y) * scale + panY;
 
-                const heading1 = path[i].heading;
-                const heading2 = path[i + 1].heading;
-
                 const segmentDist = Math.sqrt((x2 - x1) * (x2 - x1) + (y2 - y1) * (y2 - y1));
                 const controlDist = segmentDist * 0.33;
 
-                const cp1x = x1 + Math.cos(heading1) * controlDist;
-                const cp1y = y1 + Math.sin(heading1) * controlDist;
-                const cp2x = x2 - Math.cos(heading2) * controlDist;
-                const cp2y = y2 - Math.sin(heading2) * controlDist;
+                // Use velocity for control points
+                const vx1 = path[i].vx;
+                const vy1 = path[i].vy;
+                const vx2 = path[i + 1].vx;
+                const vy2 = path[i + 1].vy;
+
+                const speed1 = Math.sqrt(vx1 * vx1 + vy1 * vy1);
+                const speed2 = Math.sqrt(vx2 * vx2 + vy2 * vy2);
+
+                let cp1x, cp1y, cp2x, cp2y;
+                if (speed1 > 0.01) {
+                    const velAngle1 = Math.atan2(vy1, vx1);
+                    cp1x = x1 + Math.cos(velAngle1) * controlDist;
+                    cp1y = y1 + Math.sin(velAngle1) * controlDist;
+                } else {
+                    cp1x = x1 + (x2 - x1) * 0.33;
+                    cp1y = y1 + (y2 - y1) * 0.33;
+                }
+
+                if (speed2 > 0.01) {
+                    const velAngle2 = Math.atan2(vy2, vx2);
+                    cp2x = x2 - Math.cos(velAngle2) * controlDist;
+                    cp2y = y2 - Math.sin(velAngle2) * controlDist;
+                } else {
+                    cp2x = x1 + (x2 - x1) * 0.67;
+                    cp2y = y1 + (y2 - y1) * 0.67;
+                }
 
                 // Draw partial bezier curve
                 ctx.strokeStyle = 'rgba(255, 165, 0, 0.7)';
@@ -1420,6 +1783,10 @@
                 const mt = 1 - t;
                 const boatX = mt * mt * mt * x1 + 3 * mt * mt * t * cp1x + 3 * mt * t * t * cp2x + t * t * t * x2;
                 const boatY = mt * mt * mt * y1 + 3 * mt * mt * t * cp1y + 3 * mt * t * t * cp2y + t * t * t * y2;
+
+                // Get actual heading from path data
+                const heading1 = path[i].heading;
+                const heading2 = path[i + 1].heading;
 
                 // Interpolate heading
                 const boatHeading = heading1 + (heading2 - heading1) * segmentProgress;
@@ -1445,26 +1812,44 @@
         }
 
         function calculate() {
-            const maxAccel = parseFloat(document.getElementById('maxAccel').value);
-            const maxDecel = parseFloat(document.getElementById('maxDecel').value);
-            const maxSpeed = parseFloat(document.getElementById('maxSpeed').value);
-            const maxTurnRate = parseFloat(document.getElementById('turningRange').value);
+            const flightMode = document.getElementById('flightMode').value;
             const gridDensity = parseInt(document.getElementById('gridDensity').value);
             const timeLimit = parseFloat(document.getElementById('timeInterval').value);
             const initialHeading = parseFloat(document.getElementById('initialAngle').value);
             const initialVx = parseFloat(document.getElementById('initialVx').value);
             const initialVy = parseFloat(document.getElementById('initialVy').value);
-            
-            const params = {
-                maxAccel,
-                maxDecel,
-                maxSpeed,
-                maxTurnRate,
-                timeLimit,
-                initialHeading,
-                initialVx,
-                initialVy
-            };
+
+            let params;
+
+            if (flightMode === 'decoupled') {
+                const relativeRotation = parseFloat(document.getElementById('targetRotation').value);
+                const targetHeading = initialHeading + relativeRotation;
+
+                params = {
+                    forwardThrust: parseFloat(document.getElementById('forwardThrust').value),
+                    backwardThrust: parseFloat(document.getElementById('backwardThrust').value),
+                    leftThrust: parseFloat(document.getElementById('leftThrust').value),
+                    rightThrust: parseFloat(document.getElementById('rightThrust').value),
+                    maxSpeed: parseFloat(document.getElementById('maxSpeed').value),
+                    rotationRate: parseFloat(document.getElementById('turningRange').value),
+                    timeLimit,
+                    initialHeading,
+                    targetHeading,
+                    initialVx,
+                    initialVy
+                };
+            } else {
+                params = {
+                    maxAccel: parseFloat(document.getElementById('maxAccel').value),
+                    maxDecel: parseFloat(document.getElementById('maxDecel').value),
+                    maxSpeed: parseFloat(document.getElementById('maxSpeed').value),
+                    maxTurnRate: parseFloat(document.getElementById('turningRange').value),
+                    timeLimit,
+                    initialHeading,
+                    initialVx,
+                    initialVy
+                };
+            }
             
             // Calculate grid in world coordinates (independent of zoom/pan)
             // gridDensity is number of grid cells, gridStep is world units per cell
@@ -1480,7 +1865,12 @@
                     const relativeX = (i - gridDensity / 2) * gridStep;
                     const relativeY = (j - gridDensity / 2) * gridStep;
 
-                    const result = simulatePathToTarget(relativeX, relativeY, params);
+                    let result;
+                    if (flightMode === 'decoupled') {
+                        result = simulatePathToTargetDecoupled(relativeX, relativeY, params);
+                    } else {
+                        result = simulatePathToTarget(relativeX, relativeY, params);
+                    }
                     gridResults[`${i},${j}`] = result.reached;
                 }
             }
