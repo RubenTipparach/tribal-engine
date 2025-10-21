@@ -221,6 +221,10 @@
             <div class="control-group">
                 <button onclick="calculate()">Calculate Range</button>
             </div>
+
+            <div class="control-group">
+                <button onclick="endTurn()" id="endTurnBtn" disabled style="opacity: 0.5;">End Turn & Move Ship</button>
+            </div>
         </div>
         
         <canvas id="canvas" width="800" height="800"></canvas>
@@ -726,7 +730,17 @@
             };
 
             console.log(JSON.stringify(pathDebug, null, 2));
-            
+
+            // Enable/disable end turn button based on reachability
+            const endTurnBtn = document.getElementById('endTurnBtn');
+            if (result.reached) {
+                endTurnBtn.disabled = false;
+                endTurnBtn.style.opacity = '1';
+            } else {
+                endTurnBtn.disabled = true;
+                endTurnBtn.style.opacity = '0.5';
+            }
+
             // Update status
             const status = document.getElementById('status');
             const zoomPercent = Math.round((scale / 2) * 100);
@@ -1046,6 +1060,64 @@
             ctx.fill();
         }
         
+        function endTurn() {
+            if (!currentPath || !currentPath.reached) {
+                return;
+            }
+
+            // Get the final segment (last element in the path)
+            const finalSegment = currentPath.path[currentPath.path.length - 1];
+
+            // Update ship position to final position
+            // We need to adjust pan to center on the new position
+            const centerX = canvas.width / 2;
+            const centerY = canvas.height / 2;
+
+            // Calculate how much to pan to keep the ship centered
+            const currentShipScreenX = centerX + panX;
+            const currentShipScreenY = centerY + panY;
+            const newShipScreenX = centerX + finalSegment.x * scale + panX;
+            const newShipScreenY = centerY + finalSegment.y * scale + panY;
+
+            // Adjust pan so new position becomes origin (0,0) in world space
+            panX = panX - finalSegment.x * scale;
+            panY = panY - finalSegment.y * scale;
+
+            // Update initial velocity to final velocity
+            document.getElementById('initialVx').value = finalSegment.vx.toFixed(2);
+            document.getElementById('initialVy').value = finalSegment.vy.toFixed(2);
+
+            // Update initial heading to final heading
+            const finalHeadingDegrees = (finalSegment.heading * 180 / Math.PI) % 360;
+            document.getElementById('initialAngle').value = Math.round(finalHeadingDegrees);
+            document.getElementById('angleDisplay').textContent = Math.round(finalHeadingDegrees) + '°';
+
+            // Clear current path
+            currentPath = null;
+            gridCalculated = false;
+            gridResults = {};
+
+            // Disable end turn button
+            const endTurnBtn = document.getElementById('endTurnBtn');
+            endTurnBtn.disabled = true;
+            endTurnBtn.style.opacity = '0.5';
+
+            // Update status
+            const status = document.getElementById('status');
+            status.textContent = `Turn ended! Ship moved to new position. Click "Calculate Range" to see new movement options. | Zoom: ${Math.round((scale / 2) * 100)}% | Use mouse wheel to zoom, right-click+drag to pan`;
+            status.style.background = '#e8f4f8';
+            status.style.color = '#333';
+
+            // Redraw
+            drawGrid();
+
+            console.log('Turn ended. New ship state:', {
+                position: { x: 0, y: 0 }, // Ship is now at origin in world space
+                velocity: { x: finalSegment.vx, y: finalSegment.vy },
+                heading: { radians: finalSegment.heading, degrees: finalHeadingDegrees }
+            });
+        }
+
         function calculate() {
             const maxAccel = parseFloat(document.getElementById('maxAccel').value);
             const maxDecel = parseFloat(document.getElementById('maxDecel').value);
