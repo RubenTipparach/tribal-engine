@@ -208,6 +208,11 @@
             </div>
             
             <div class="control-group">
+                <label for="pathTimeStep">Path Time Step (s)</label>
+                <input type="number" id="pathTimeStep" value="1" step="0.1" min="0.1" max="5">
+            </div>
+            
+            <div class="control-group">
                 <label for="initialAngle">Initial Heading (°)</label>
                 <input type="range" id="initialAngle" min="0" max="360" value="0" step="15">
                 <span class="value-display" id="angleDisplay">0°</span>
@@ -220,7 +225,7 @@
         
         <canvas id="canvas" width="800" height="800"></canvas>
         
-        <div class="status" id="status">Click on any point to see if the boat can reach it and visualize the path</div>
+        <div class="status" id="status">Click on any point to see if the boat can reach it and visualize the path | Zoom: 100% | Use mouse wheel to zoom, right-click+drag to pan</div>
         
         <div class="legend">
             <div class="legend-item">
@@ -246,13 +251,15 @@
         </div>
         
         <div class="info">
-            <strong>How to use:</strong> 
+            <strong>How to use:</strong>
             <ul style="margin: 5px 0; padding-left: 20px;">
                 <li>Click "Calculate Range" to show all reachable positions</li>
                 <li>Click on any point to see if the boat can reach it</li>
                 <li>If reachable, the blue path shows how the boat gets there</li>
                 <li>The boat orientation at the destination is shown in blue</li>
                 <li>Set initial velocities to simulate a moving start</li>
+                <li><strong>Use mouse wheel to zoom in/out</strong></li>
+                <li><strong>Right-click+drag to pan the view</strong></li>
             </ul>
         </div>
     </div>
@@ -263,6 +270,12 @@
         let gridCalculated = false;
         let gridResults = {};
         let currentPath = null;
+        let scale = 2; // pixels per meter - can be changed for zoom
+        let panX = 0;
+        let panY = 0;
+        let isPanning = false;
+        let lastMouseX = 0;
+        let lastMouseY = 0;
         
         // Update display values
         document.getElementById('turningRange').addEventListener('input', (e) => {
@@ -279,8 +292,132 @@
         
         // Add click handler
         canvas.addEventListener('click', handleCanvasClick);
+
+        // Add zoom handler
+        canvas.addEventListener('wheel', handleZoom);
+
+        // Add pan handlers
+        canvas.addEventListener('mousedown', handlePanStart);
+        canvas.addEventListener('mousemove', handlePanMove);
+        canvas.addEventListener('mouseup', handlePanEnd);
+        canvas.addEventListener('mouseleave', handlePanEnd);
         
         function simulatePathToTarget(targetX, targetY, params) {
+            const {
+                maxAccel,
+                maxDecel,
+                maxSpeed,
+                maxTurnRate,
+                timeLimit,
+                initialHeading,
+                initialVx,
+                initialVy,
+                pathTimeStep
+            } = params;
+            
+            // This function generates a segmented path that tries to reach the target
+            // while respecting the 10-segment constraint
+            
+            // Convert to radians
+            const maxTurnRad = maxTurnRate * Math.PI / 180;
+            const initialHeadingRad = initialHeading * Math.PI / 180;
+            
+            // Number of segments (10 segments over the time interval)
+            const numSegments = 10;
+            const segmentTime = timeLimit / numSegments;
+            
+            // First, use the original canReachPoint to determine if target is actually reachable
+            const actuallyReachable = canReachPoint(targetX, targetY, params);
+            
+            // Initialize position and velocity
+            let x = 0, y = 0;
+            let vx = initialVx, vy = initialVy;
+            let heading = initialHeadingRad;
+            let currentSpeed = Math.sqrt(vx * vx + vy * vy);
+            
+            // Create path array
+            const path = [{x, y, vx, vy, heading, t: 0}];
+            
+            // For each segment, calculate optimal turn and speed to reach target
+            for (let seg = 1; seg <= numSegments; seg++) {
+                // Calculate remaining time and current distance to target
+                const remainingTime = (numSegments - seg + 1) * segmentTime;
+                const dx = targetX - x;
+                const dy = targetY - y;
+                const distToTarget = Math.sqrt(dx * dx + dy * dy);
+                
+                // Calculate desired heading to target
+                const desiredHeading = Math.atan2(dy, dx);
+                
+                // Calculate heading error
+                let headingError = desiredHeading - heading;
+                while (headingError > Math.PI) headingError -= 2 * Math.PI;
+                while (headingError < -Math.PI) headingError += 2 * Math.PI;
+                
+                // Calculate turn for this segment (limited by max turn rate)
+                const maxTurnThisSegment = maxTurnRad * segmentTime;
+                let turnThisSegment = headingError / (numSegments - seg + 1); // Distribute remaining turn
+                turnThisSegment = Math.max(-maxTurnThisSegment, Math.min(maxTurnThisSegment, turnThisSegment));
+                
+                // Update heading
+                heading += turnThisSegment;
+                
+                // Calculate desired speed to reach target in remaining time
+                let desiredSpeed = distToTarget / remainingTime;
+                
+                // Apply acceleration/deceleration constraints
+                if (desiredSpeed > currentSpeed) {
+                    // Need to accelerate
+                    currentSpeed = Math.min(
+                        currentSpeed + maxAccel * segmentTime,
+                        desiredSpeed,
+                        maxSpeed
+                    );
+                } else {
+                    // Need to decelerate
+                    currentSpeed = Math.max(
+                        currentSpeed - maxDecel * segmentTime,
+                        desiredSpeed,
+                        0
+                    );
+                }
+                
+                // Calculate distance traveled in this segment
+                const avgSpeed = currentSpeed;
+                const distance = avgSpeed * segmentTime;
+                
+                // Update position (move in current heading direction)
+                x += distance * Math.cos(heading);
+                y += distance * Math.sin(heading);
+                
+                // Update velocity components
+                vx = currentSpeed * Math.cos(heading);
+                vy = currentSpeed * Math.sin(heading);
+                
+                // Add to path
+                path.push({
+                    x, y,
+                    vx, vy,
+                    heading,
+                    t: seg * segmentTime
+                });
+            }
+            
+            // Check final distance to target
+            const finalDist = Math.sqrt((targetX - x) * (targetX - x) + (targetY - y) * (targetY - y));
+            
+            return {
+                reached: actuallyReachable,
+                path: path,
+                finalHeading: heading,
+                finalX: x,
+                finalY: y,
+                targetX: targetX,
+                targetY: targetY
+            };
+        }
+        
+        function canReachPoint(targetX, targetY, params) {
             const {
                 maxAccel,
                 maxDecel,
@@ -292,55 +429,68 @@
                 initialVy
             } = params;
             
-            // Convert to radians
+            // Original reachability logic - unchanged
             const maxTurnRad = maxTurnRate * Math.PI / 180;
             const initialHeadingRad = initialHeading * Math.PI / 180;
             
-            // Simulation parameters
-            const dt = 0.1; // Time step
+            // Calculate distance and angle to target
+            const distance = Math.sqrt(targetX * targetX + targetY * targetY);
+            const targetAngle = Math.atan2(targetY, targetX);
+            
+            // Quick check: can we reach this distance in time?
+            const timeToMaxSpeed = maxSpeed / maxAccel;
+            let maxDistance;
+            
+            if (timeToMaxSpeed >= timeLimit) {
+                maxDistance = 0.5 * maxAccel * timeLimit * timeLimit;
+            } else {
+                const distanceAccelerating = 0.5 * maxAccel * timeToMaxSpeed * timeToMaxSpeed;
+                const remainingTime = timeLimit - timeToMaxSpeed;
+                maxDistance = distanceAccelerating + maxSpeed * remainingTime;
+            }
+            
+            if (distance > maxDistance * 1.2) {
+                return false;
+            }
+            
+            // Check turning constraint
+            let angleDiff = targetAngle - initialHeadingRad;
+            while (angleDiff > Math.PI) angleDiff -= 2 * Math.PI;
+            while (angleDiff < -Math.PI) angleDiff += 2 * Math.PI;
+            
+            const minTurnTime = Math.abs(angleDiff) / maxTurnRad;
+            
+            if (minTurnTime > timeLimit) {
+                return false;
+            }
+            
+            // More sophisticated check: simulate a simple trajectory
+            const dt = 0.1;
             let t = 0;
             let x = 0, y = 0;
             let vx = initialVx, vy = initialVy;
             let heading = initialHeadingRad;
             
-            // Path recording
-            const path = [{x, y, vx, vy, heading, t: 0}];
-            
             while (t < timeLimit) {
-                // Calculate error to target
                 const dx = targetX - x;
                 const dy = targetY - y;
                 const distToTarget = Math.sqrt(dx * dx + dy * dy);
                 
-                if (distToTarget < 2) { // Close enough
-                    return {
-                        reached: true,
-                        path: path,
-                        finalHeading: heading,
-                        finalX: x,
-                        finalY: y
-                    };
+                if (distToTarget < 2) {
+                    return true;
                 }
                 
-                // Desired heading to target
                 const desiredHeading = Math.atan2(dy, dx);
-                
-                // Calculate heading error
                 let headingError = desiredHeading - heading;
                 while (headingError > Math.PI) headingError -= 2 * Math.PI;
                 while (headingError < -Math.PI) headingError += 2 * Math.PI;
                 
-                // Turn towards target
                 const turnRate = Math.max(-maxTurnRad, Math.min(maxTurnRad, headingError / dt));
                 heading += turnRate * dt;
                 
-                // Current speed
                 const speed = Math.sqrt(vx * vx + vy * vy);
-                
-                // Calculate stopping distance
                 const stoppingDist = speed * speed / (2 * maxDecel);
                 
-                // Decide whether to accelerate or decelerate
                 let accel;
                 if (distToTarget > stoppingDist + 5 && speed < maxSpeed) {
                     accel = maxAccel;
@@ -350,52 +500,152 @@
                     accel = 0;
                 }
                 
-                // Apply acceleration in current heading direction
                 vx += accel * Math.cos(heading) * dt;
                 vy += accel * Math.sin(heading) * dt;
                 
-                // Limit speed
                 const newSpeed = Math.sqrt(vx * vx + vy * vy);
                 if (newSpeed > maxSpeed) {
                     vx = vx * maxSpeed / newSpeed;
                     vy = vy * maxSpeed / newSpeed;
                 }
                 
-                // Update position
                 x += vx * dt;
                 y += vy * dt;
-                
                 t += dt;
-                
-                // Record path point every few steps
-                if (path.length === 0 || t - path[path.length - 1].t >= 0.3) {
-                    path.push({x, y, vx, vy, heading, t});
-                }
             }
             
-            // Check if we're close enough at the end
             const finalDist = Math.sqrt((targetX - x) * (targetX - x) + (targetY - y) * (targetY - y));
-            return {
-                reached: finalDist < 5,
-                path: path,
-                finalHeading: heading,
-                finalX: x,
-                finalY: y
-            };
+            return finalDist < 5;
         }
         
+        function handleZoom(event) {
+            event.preventDefault();
+
+            const rect = canvas.getBoundingClientRect();
+            const mouseX = event.clientX - rect.left;
+            const mouseY = event.clientY - rect.top;
+
+            // Get world coordinates before zoom
+            const centerX = canvas.width / 2;
+            const centerY = canvas.height / 2;
+            const worldXBefore = (mouseX - centerX - panX) / scale;
+            const worldYBefore = (mouseY - centerY - panY) / scale;
+
+            // Zoom in or out
+            const zoomFactor = event.deltaY < 0 ? 1.1 : 0.9;
+            scale *= zoomFactor;
+
+            // Clamp scale to reasonable values
+            scale = Math.max(0.5, Math.min(10, scale));
+
+            // Get world coordinates after zoom
+            const worldXAfter = (mouseX - centerX - panX) / scale;
+            const worldYAfter = (mouseY - centerY - panY) / scale;
+
+            // Adjust pan to keep mouse position in same world location
+            panX += (worldXAfter - worldXBefore) * scale;
+            panY += (worldYAfter - worldYBefore) * scale;
+
+            // Update zoom display
+            updateZoomDisplay();
+
+            // Redraw
+            drawGrid();
+            if (currentPath) {
+                const targetX = currentPath.targetX;
+                const targetY = currentPath.targetY;
+                const screenX = centerX + targetX * scale + panX;
+                const screenY = centerY + targetY * scale + panY;
+                drawTarget(screenX, screenY, currentPath.reached);
+                if (currentPath.reached) {
+                    drawPath(currentPath.path);
+                    drawBoatAtDestination(currentPath.finalX, currentPath.finalY, currentPath.finalHeading);
+                }
+            }
+        }
+
+        function handlePanStart(event) {
+            // Only pan with right mouse button
+            if (event.button === 2) {
+                event.preventDefault();
+                isPanning = true;
+                lastMouseX = event.clientX;
+                lastMouseY = event.clientY;
+                canvas.style.cursor = 'grabbing';
+            }
+        }
+
+        // Prevent context menu on right click
+        canvas.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+        });
+
+        function handlePanMove(event) {
+            if (isPanning) {
+                const dx = event.clientX - lastMouseX;
+                const dy = event.clientY - lastMouseY;
+
+                panX += dx;
+                panY += dy;
+
+                lastMouseX = event.clientX;
+                lastMouseY = event.clientY;
+
+                // Redraw
+                drawGrid();
+                if (currentPath) {
+                    const centerX = canvas.width / 2;
+                    const centerY = canvas.height / 2;
+                    const targetX = currentPath.targetX;
+                    const targetY = currentPath.targetY;
+                    const screenX = centerX + targetX * scale + panX;
+                    const screenY = centerY + targetY * scale + panY;
+                    drawTarget(screenX, screenY, currentPath.reached);
+                    if (currentPath.reached) {
+                        drawPath(currentPath.path);
+                        drawBoatAtDestination(currentPath.finalX, currentPath.finalY, currentPath.finalHeading);
+                    }
+                }
+            }
+        }
+
+        function handlePanEnd(event) {
+            if (isPanning) {
+                isPanning = false;
+                canvas.style.cursor = 'crosshair';
+            }
+        }
+
+        function updateZoomDisplay() {
+            const zoomPercent = Math.round((scale / 2) * 100);
+            const status = document.getElementById('status');
+            const statusText = status.textContent;
+            const parts = statusText.split('|');
+            if (parts.length >= 3) {
+                parts[1] = ` Zoom: ${zoomPercent}% `;
+                status.textContent = parts.join('|');
+            } else {
+                const baseText = parts[0];
+                status.textContent = `${baseText} | Zoom: ${zoomPercent}% | Use mouse wheel to zoom, right-click+drag to pan`;
+            }
+        }
+
         function handleCanvasClick(event) {
+            // Don't trigger click if we were panning or right-clicking
+            if (event.button === 2) {
+                return;
+            }
+
             const rect = canvas.getBoundingClientRect();
             const clickX = event.clientX - rect.left;
             const clickY = event.clientY - rect.top;
-            
+
             // Convert to world coordinates
             const centerX = canvas.width / 2;
             const centerY = canvas.height / 2;
-            const scale = 2; // pixels per meter
-            
-            const worldX = (clickX - centerX) / scale;
-            const worldY = (clickY - centerY) / scale;
+
+            const worldX = (clickX - centerX - panX) / scale;
+            const worldY = (clickY - centerY - panY) / scale;
             
             // Get parameters
             const params = {
@@ -406,7 +656,8 @@
                 timeLimit: parseFloat(document.getElementById('timeInterval').value),
                 initialHeading: parseFloat(document.getElementById('initialAngle').value),
                 initialVx: parseFloat(document.getElementById('initialVx').value),
-                initialVy: parseFloat(document.getElementById('initialVy').value)
+                initialVy: parseFloat(document.getElementById('initialVy').value),
+                pathTimeStep: parseFloat(document.getElementById('pathTimeStep').value)
             };
             
             // Simulate path to this point
@@ -415,20 +666,25 @@
             
             // Update status
             const status = document.getElementById('status');
+            const zoomPercent = Math.round((scale / 2) * 100);
             if (result.reached) {
-                status.textContent = `✓ Target at (${worldX.toFixed(1)}, ${worldY.toFixed(1)}) is REACHABLE - Path shown in blue`;
+                status.textContent = `✓ Target at (${worldX.toFixed(1)}, ${worldY.toFixed(1)}) is REACHABLE - Path shown in blue | Zoom: ${zoomPercent}% | Use mouse wheel to zoom, right-click+drag to pan`;
                 status.style.background = '#d4f4dd';
                 status.style.color = '#0d7829';
             } else {
-                status.textContent = `✗ Target at (${worldX.toFixed(1)}, ${worldY.toFixed(1)}) is UNREACHABLE`;
+                status.textContent = `✗ Target at (${worldX.toFixed(1)}, ${worldY.toFixed(1)}) is UNREACHABLE | Zoom: ${zoomPercent}% | Use mouse wheel to zoom, right-click+drag to pan`;
                 status.style.background = '#ffd4d4';
                 status.style.color = '#d32f2f';
             }
             
             // Redraw with the new target
             drawGrid();
-            drawTarget(clickX, clickY, result.reached);
-            
+
+            // Convert world coordinates back to screen for drawing target
+            const targetScreenX = centerX + worldX * scale + panX;
+            const targetScreenY = centerY + worldY * scale + panY;
+            drawTarget(targetScreenX, targetScreenY, result.reached);
+
             if (result.reached) {
                 drawPath(result.path);
                 drawBoatAtDestination(result.finalX, result.finalY, result.finalHeading);
@@ -438,44 +694,117 @@
         function drawPath(path) {
             const centerX = canvas.width / 2;
             const centerY = canvas.height / 2;
-            const scale = 2;
             
-            // Draw path line
-            ctx.strokeStyle = 'rgba(65, 105, 225, 0.5)';
-            ctx.lineWidth = 3;
-            ctx.beginPath();
-            
-            for (let i = 0; i < path.length; i++) {
-                const screenX = centerX + path[i].x * scale;
-                const screenY = centerY + path[i].y * scale;
+            // Draw path as segments with arcs
+            for (let i = 0; i < path.length - 1; i++) {
+                const x1 = centerX + path[i].x * scale + panX;
+                const y1 = centerY + path[i].y * scale + panY;
+                const x2 = centerX + path[i + 1].x * scale + panX;
+                const y2 = centerY + path[i + 1].y * scale + panY;
                 
-                if (i === 0) {
-                    ctx.moveTo(screenX, screenY);
-                } else {
-                    ctx.lineTo(screenX, screenY);
+                // Calculate arc between segments
+                const heading1 = path[i].heading;
+                const heading2 = path[i + 1].heading;
+                const avgHeading = (heading1 + heading2) / 2;
+                
+                // Draw arc segment
+                ctx.strokeStyle = `rgba(65, 105, 225, ${0.7 - i * 0.3 / path.length})`;
+                ctx.lineWidth = 3;
+                ctx.beginPath();
+                
+                // Create arc path through intermediate points
+                const steps = 10;
+                for (let j = 0; j <= steps; j++) {
+                    const t = j / steps;
+                    // Interpolate position along arc
+                    const interX = x1 + (x2 - x1) * t;
+                    const interY = y1 + (y2 - y1) * t;
+                    
+                    // Add slight curve based on heading change
+                    const turnAmount = (heading2 - heading1);
+                    const curveOffset = Math.sin(t * Math.PI) * turnAmount * 10;
+                    const perpAngle = avgHeading + Math.PI / 2;
+                    const curveX = interX + Math.cos(perpAngle) * curveOffset;
+                    const curveY = interY + Math.sin(perpAngle) * curveOffset;
+                    
+                    if (j === 0) {
+                        ctx.moveTo(curveX, curveY);
+                    } else {
+                        ctx.lineTo(curveX, curveY);
+                    }
+                }
+                ctx.stroke();
+                
+                // Draw boat at this segment position
+                ctx.save();
+                ctx.translate(x1, y1);
+                ctx.rotate(path[i].heading);
+                
+                // Draw boat triangle at each position
+                ctx.fillStyle = `rgba(65, 105, 225, ${0.5 - i * 0.3 / path.length})`;
+                ctx.strokeStyle = `rgba(30, 58, 138, ${0.6 - i * 0.3 / path.length})`;
+                ctx.lineWidth = 1;
+                ctx.beginPath();
+                ctx.moveTo(8, 0);
+                ctx.lineTo(-5, -4);
+                ctx.lineTo(-5, 4);
+                ctx.closePath();
+                ctx.fill();
+                ctx.stroke();
+                
+                ctx.restore();
+                
+                // Draw segment number and time
+                if (i > 0) {
+                    ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+                    ctx.font = 'bold 11px Arial';
+                    ctx.fillText(`Seg ${i}`, x1 + 10, y1 - 5);
+                    ctx.font = '10px Arial';
+                    ctx.fillText(`t=${path[i].t.toFixed(1)}s`, x1 + 10, y1 + 8);
+                    
+                    // Calculate and show speed
+                    const speed = Math.sqrt(path[i].vx * path[i].vx + path[i].vy * path[i].vy);
+                    ctx.fillStyle = 'rgba(255, 107, 107, 0.7)';
+                    ctx.fillText(`${speed.toFixed(1)}m/s`, x1 + 10, y1 + 20);
+                }
+                
+                // Draw velocity indicator
+                const vScale = 1.5;
+                const vx = path[i].vx * vScale;
+                const vy = path[i].vy * vScale;
+                if (Math.sqrt(vx * vx + vy * vy) > 0.1) {
+                    ctx.strokeStyle = `rgba(255, 107, 107, ${0.4 - i * 0.2 / path.length})`;
+                    ctx.lineWidth = 1;
+                    ctx.setLineDash([2, 2]);
+                    ctx.beginPath();
+                    ctx.moveTo(x1, y1);
+                    ctx.lineTo(x1 + vx, y1 + vy);
+                    ctx.stroke();
+                    ctx.setLineDash([]);
                 }
             }
-            ctx.stroke();
             
-            // Draw path points
+            // Highlight segment endpoints with circles
             for (let i = 0; i < path.length; i++) {
-                const screenX = centerX + path[i].x * scale;
-                const screenY = centerY + path[i].y * scale;
+                const x = centerX + path[i].x * scale + panX;
+                const y = centerY + path[i].y * scale + panY;
                 
                 ctx.fillStyle = 'rgba(65, 105, 225, 0.3)';
+                ctx.strokeStyle = 'rgba(65, 105, 225, 0.8)';
+                ctx.lineWidth = 1.5;
                 ctx.beginPath();
-                ctx.arc(screenX, screenY, 2, 0, Math.PI * 2);
+                ctx.arc(x, y, 4, 0, Math.PI * 2);
                 ctx.fill();
+                ctx.stroke();
             }
         }
         
         function drawBoatAtDestination(x, y, heading) {
             const centerX = canvas.width / 2;
             const centerY = canvas.height / 2;
-            const scale = 2;
-            
-            const screenX = centerX + x * scale;
-            const screenY = centerY + y * scale;
+
+            const screenX = centerX + x * scale + panX;
+            const screenY = centerY + y * scale + panY;
             
             ctx.save();
             ctx.translate(screenX, screenY);
@@ -516,27 +845,42 @@
             // Clear canvas
             ctx.fillStyle = '#f8f9fa';
             ctx.fillRect(0, 0, canvas.width, canvas.height);
-            
+
             const centerX = canvas.width / 2;
             const centerY = canvas.height / 2;
-            const scale = 2;
-            const gridSize = canvas.width / scale;
             const gridDensity = parseInt(document.getElementById('gridDensity').value);
-            const gridStep = gridSize / gridDensity;
+
+            // Use same world grid size as calculate function
+            const worldGridSize = 400; // meters
+            const gridStep = worldGridSize / gridDensity;
             
             // Draw grid lines
             ctx.strokeStyle = '#e0e0e0';
             ctx.lineWidth = 0.5;
-            for (let i = 0; i <= gridDensity; i++) {
-                const pos = i * gridStep * scale;
-                ctx.beginPath();
-                ctx.moveTo(pos, 0);
-                ctx.lineTo(pos, canvas.height);
-                ctx.stroke();
-                ctx.beginPath();
-                ctx.moveTo(0, pos);
-                ctx.lineTo(canvas.width, pos);
-                ctx.stroke();
+
+            // Calculate visible grid range
+            const startI = Math.floor((-centerX - panX) / (gridStep * scale));
+            const endI = Math.ceil((canvas.width - centerX - panX) / (gridStep * scale));
+            const startJ = Math.floor((-centerY - panY) / (gridStep * scale));
+            const endJ = Math.ceil((canvas.height - centerY - panY) / (gridStep * scale));
+
+            for (let i = startI; i <= endI; i++) {
+                const pos = centerX + i * gridStep * scale + panX;
+                if (pos >= 0 && pos <= canvas.width) {
+                    ctx.beginPath();
+                    ctx.moveTo(pos, 0);
+                    ctx.lineTo(pos, canvas.height);
+                    ctx.stroke();
+                }
+            }
+            for (let j = startJ; j <= endJ; j++) {
+                const pos = centerY + j * gridStep * scale + panY;
+                if (pos >= 0 && pos <= canvas.height) {
+                    ctx.beginPath();
+                    ctx.moveTo(0, pos);
+                    ctx.lineTo(canvas.width, pos);
+                    ctx.stroke();
+                }
             }
             
             // Draw grid points if calculated
@@ -545,13 +889,17 @@
                     const [i, j] = key.split(',').map(Number);
                     const worldX = (i - gridDensity / 2) * gridStep;
                     const worldY = (j - gridDensity / 2) * gridStep;
-                    const screenX = centerX + worldX * scale;
-                    const screenY = centerY + worldY * scale;
-                    
-                    ctx.beginPath();
-                    ctx.arc(screenX, screenY, 3, 0, Math.PI * 2);
-                    ctx.fillStyle = gridResults[key] ? 'rgba(0, 255, 0, 0.8)' : 'rgba(255, 0, 0, 0.3)';
-                    ctx.fill();
+                    const screenX = centerX + worldX * scale + panX;
+                    const screenY = centerY + worldY * scale + panY;
+
+                    // Only draw if on screen
+                    if (screenX >= -10 && screenX <= canvas.width + 10 &&
+                        screenY >= -10 && screenY <= canvas.height + 10) {
+                        ctx.beginPath();
+                        ctx.arc(screenX, screenY, 3, 0, Math.PI * 2);
+                        ctx.fillStyle = gridResults[key] ? 'rgba(0, 255, 0, 0.8)' : 'rgba(255, 0, 0, 0.3)';
+                        ctx.fill();
+                    }
                 }
             }
             
@@ -559,9 +907,9 @@
             const initialHeading = parseFloat(document.getElementById('initialAngle').value);
             const initialVx = parseFloat(document.getElementById('initialVx').value);
             const initialVy = parseFloat(document.getElementById('initialVy').value);
-            
+
             ctx.save();
-            ctx.translate(centerX, centerY);
+            ctx.translate(centerX + panX, centerY + panY);
             ctx.rotate(initialHeading * Math.PI / 180);
             
             // Draw boat triangle
@@ -591,18 +939,18 @@
             // Draw velocity vector if non-zero
             if (initialVx !== 0 || initialVy !== 0) {
                 ctx.save();
-                ctx.translate(centerX, centerY);
-                
+                ctx.translate(centerX + panX, centerY + panY);
+
                 const vMag = Math.sqrt(initialVx * initialVx + initialVy * initialVy);
                 const vAngle = Math.atan2(initialVy, initialVx);
-                
+
                 ctx.strokeStyle = '#FF6B6B';
                 ctx.lineWidth = 3;
                 ctx.beginPath();
                 ctx.moveTo(0, 0);
                 ctx.lineTo(initialVx * scale * 2, initialVy * scale * 2);
                 ctx.stroke();
-                
+
                 // Arrow head
                 ctx.save();
                 ctx.translate(initialVx * scale * 2, initialVy * scale * 2);
@@ -615,19 +963,19 @@
                 ctx.fillStyle = '#FF6B6B';
                 ctx.fill();
                 ctx.restore();
-                
+
                 ctx.restore();
-                
+
                 // Label velocity
                 ctx.fillStyle = '#FF6B6B';
                 ctx.font = 'bold 12px Arial';
-                ctx.fillText(`V₀ = ${vMag.toFixed(1)} m/s`, centerX + 20, centerY - 20);
+                ctx.fillText(`V₀ = ${vMag.toFixed(1)} m/s`, centerX + panX + 20, centerY + panY - 20);
             }
-            
+
             // Draw center marker
             ctx.fillStyle = '#333';
             ctx.beginPath();
-            ctx.arc(centerX, centerY, 4, 0, Math.PI * 2);
+            ctx.arc(centerX + panX, centerY + panY, 4, 0, Math.PI * 2);
             ctx.fill();
         }
         
@@ -653,9 +1001,11 @@
                 initialVy
             };
             
-            const gridSize = canvas.width / 2;
-            const gridStep = gridSize / gridDensity;
-            
+            // Calculate grid in world coordinates (independent of zoom/pan)
+            // gridDensity is number of grid cells, gridStep is world units per cell
+            const worldGridSize = 400; // Total world space size (meters)
+            const gridStep = worldGridSize / gridDensity;
+
             // Calculate reachability for each grid point
             gridResults = {};
             for (let i = 0; i <= gridDensity; i++) {
@@ -671,8 +1021,9 @@
             gridCalculated = true;
             currentPath = null;
             drawGrid();
-            
-            document.getElementById('status').textContent = 'Grid calculated! Click on any point to see the path.';
+
+            const zoomPercent = Math.round((scale / 2) * 100);
+            document.getElementById('status').textContent = `Grid calculated! Click on any point to see the path. | Zoom: ${zoomPercent}% | Use mouse wheel to zoom, right-click+drag to pan`;
         }
         
         // Initial draw
