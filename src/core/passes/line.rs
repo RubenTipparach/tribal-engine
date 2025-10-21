@@ -390,12 +390,12 @@ impl crate::core::RenderPass for LinePass {
         // 1. Collect bezier curve vertices
         if let Some(hologram_pos) = game.hologram_ship_position {
             if let Some(fed_entity) = game.fed_cruiser_entity {
-                if let Ok(mut query) = game.ecs_world.world.query_one::<&crate::ecs::components::Position>(fed_entity) {
-                    if let Some(position) = query.get() {
+                if let Ok(mut query) = game.ecs_world.world.query_one::<(&crate::ecs::components::Position, &crate::ecs::components::Ship)>(fed_entity) {
+                    if let Some((position, ship)) = query.get() {
                         let ship_pos = position.0;
 
-                        // Calculate control point (midpoint for now)
-                        let control_point = (ship_pos + hologram_pos) * 0.5;
+                        // Use the control point from ship (calculated for car-like arc)
+                        let control_point = ship.control_point;
 
                         // Generate bezier curve points
                         let curve_points = Self::generate_bezier_curve(
@@ -437,6 +437,66 @@ impl crate::core::RenderPass for LinePass {
                 vertex_count,
                 Vec4::new(1.0, 1.0, 0.0, 0.5), // Yellow semi-transparent
             ));
+        }
+
+        // 3. Draw picking area debug visualization (sphere wireframe around hologram)
+        if game.game_manager.mode == crate::game_manager::GameMode::Play {
+            if let Some(hologram_pos) = game.hologram_ship_position {
+                // Get scale from ECS to match picking logic
+                if let Some(fed_entity) = game.fed_cruiser_entity {
+                    if let Ok(mut query) = game.ecs_world.world.query_one::<&crate::ecs::components::Scale>(fed_entity) {
+                        if let Some(scale_comp) = query.get() {
+                            // Use same picking radius as object picker: max scale * 1.5
+                            let scale = glam::Vec3::new(scale_comp.0.x as f32, scale_comp.0.y as f32, scale_comp.0.z as f32);
+                            let radius = scale.x.max(scale.y).max(scale.z) * 1.5;
+
+                            let sphere_vertices = Self::generate_wireframe_sphere(
+                                hologram_pos.as_vec3(),
+                                radius,
+                                16, // Latitude segments
+                                16, // Longitude segments
+                            );
+
+                            if !sphere_vertices.is_empty() {
+                                let start_offset = all_vertices.len();
+                                all_vertices.extend_from_slice(&sphere_vertices);
+                                let vertex_count = sphere_vertices.len();
+
+                                draw_commands.push((
+                                    start_offset,
+                                    vertex_count,
+                                    Vec4::new(1.0, 0.0, 1.0, 0.8), // Magenta for debug
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 4. Draw camera center cursor (appears when using WASD free camera)
+        if game.show_camera_cursor {
+            let cursor_pos = game.camera_cursor_position.as_vec3();
+            let cursor_radius = 0.3; // Small sphere to mark the center
+
+            let sphere_vertices = Self::generate_wireframe_sphere(
+                cursor_pos,
+                cursor_radius,
+                8,  // Latitude segments (fewer for small cursor)
+                8,  // Longitude segments
+            );
+
+            if !sphere_vertices.is_empty() {
+                let start_offset = all_vertices.len();
+                all_vertices.extend_from_slice(&sphere_vertices);
+                let vertex_count = sphere_vertices.len();
+
+                draw_commands.push((
+                    start_offset,
+                    vertex_count,
+                    Vec4::new(1.0, 1.0, 0.0, 1.0), // Yellow cursor
+                ));
+            }
         }
 
         // Update vertex buffer with collected data
@@ -558,5 +618,58 @@ impl crate::core::RenderPass for LinePass {
         // Only render in play mode when hologram exists
         game.game_manager.mode == crate::game_manager::GameMode::Play
             && game.hologram_ship_position.is_some()
+    }
+}
+
+impl LinePass {
+    /// Generate wireframe sphere for debug visualization
+    /// Returns line segments (pairs of vertices)
+    fn generate_wireframe_sphere(center: Vec3, radius: f32, lat_segments: usize, lon_segments: usize) -> Vec<Vec3> {
+        let mut vertices = Vec::new();
+
+        // Generate latitude circles
+        for lat in 0..lat_segments {
+            let theta1 = std::f32::consts::PI * (lat as f32 / lat_segments as f32);
+
+            for lon in 0..lon_segments {
+                let phi1 = 2.0 * std::f32::consts::PI * (lon as f32 / lon_segments as f32);
+                let phi2 = 2.0 * std::f32::consts::PI * ((lon + 1) as f32 / lon_segments as f32);
+
+                // Current latitude circle
+                let x1 = radius * theta1.sin() * phi1.cos();
+                let y1 = radius * theta1.cos();
+                let z1 = radius * theta1.sin() * phi1.sin();
+
+                let x2 = radius * theta1.sin() * phi2.cos();
+                let y2 = radius * theta1.cos();
+                let z2 = radius * theta1.sin() * phi2.sin();
+
+                vertices.push(center + Vec3::new(x1, y1, z1));
+                vertices.push(center + Vec3::new(x2, y2, z2));
+            }
+        }
+
+        // Generate longitude circles
+        for lon in 0..lon_segments {
+            let phi = 2.0 * std::f32::consts::PI * (lon as f32 / lon_segments as f32);
+
+            for lat in 0..lat_segments {
+                let theta1 = std::f32::consts::PI * (lat as f32 / lat_segments as f32);
+                let theta2 = std::f32::consts::PI * ((lat + 1) as f32 / lat_segments as f32);
+
+                let x1 = radius * theta1.sin() * phi.cos();
+                let y1 = radius * theta1.cos();
+                let z1 = radius * theta1.sin() * phi.sin();
+
+                let x2 = radius * theta2.sin() * phi.cos();
+                let y2 = radius * theta2.cos();
+                let z2 = radius * theta2.sin() * phi.sin();
+
+                vertices.push(center + Vec3::new(x1, y1, z1));
+                vertices.push(center + Vec3::new(x2, y2, z2));
+            }
+        }
+
+        vertices
     }
 }

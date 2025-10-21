@@ -862,9 +862,9 @@ impl ObjectPicker {
 
         let mut closest_object: Option<(ObjectId, f32)> = None;
 
-        // Check all objects (skip nebula and skybox - they're not selectable)
+        // Check all objects (skip nebula, skybox, and sphere/star - they're not selectable in viewport)
         for obj in scene.objects().values() {
-            if !obj.visible || obj.object_type == ObjectType::Nebula || obj.object_type == ObjectType::Skybox {
+            if !obj.visible || obj.object_type == ObjectType::Nebula || obj.object_type == ObjectType::Skybox || obj.object_type == ObjectType::Sphere {
                 continue;
             }
 

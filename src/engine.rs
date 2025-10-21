@@ -103,6 +103,16 @@ impl Engine {
                             viewport_height,
                         );
                     }
+                    // Handle hologram drag if active
+                    else if game_state.game.dragging_hologram && !self.renderer.imgui_wants_mouse() {
+                        let (viewport_width, viewport_height) = self.renderer.viewport_size();
+                        game_state.game.handle_hologram_drag(
+                            position.x as f32,
+                            position.y as f32,
+                            viewport_width,
+                            viewport_height,
+                        );
+                    }
                     // Update hover state if not using ImGui or gizmo
                     else if !self.renderer.imgui_wants_mouse() && !game_state.game.gizmo_state.using_gizmo {
                         let (viewport_width, viewport_height) = self.renderer.viewport_size();
@@ -122,6 +132,7 @@ impl Engine {
                     if button == MouseButton::Left {
                         match state {
                             ElementState::Pressed => {
+                                game_state.left_mouse_pressed = true;
                                 if !self.renderer.imgui_wants_mouse() {
                                     let (viewport_width, viewport_height) = self.renderer.viewport_size();
                                     game_state.game.handle_mouse_click(
@@ -133,7 +144,9 @@ impl Engine {
                                 }
                             }
                             ElementState::Released => {
+                                game_state.left_mouse_pressed = false;
                                 game_state.game.handle_mouse_release();
+                                game_state.game.handle_hologram_release();
                             }
                         }
                     }

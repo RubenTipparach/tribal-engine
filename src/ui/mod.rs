@@ -1017,31 +1017,49 @@ impl UiManager {
             });
     }
 
-    /// Render object hover info overlay (only when nothing is selected)
+    /// Render object hover info overlay (works in both edit and play mode)
     pub fn render_object_info(ui: &Ui, game: &Game) {
-        // Show hover tooltip whenever hovering over an object
-        if let Some(hovered_id) = game.object_picker.hovered_object {
-            if let Some(obj) = game.scene.get_object(hovered_id) {
-                let is_selected = game.scene.selected_object_id() == Some(hovered_id);
-                let label = if is_selected {
-                    format!("Selected: {}", obj.name)
-                } else {
-                    format!("Hovering: {}", obj.name)
-                };
-
+        // In play mode, show hologram hover text
+        if game.game_manager.is_playing() {
+            if let Some(ref hover_text) = game.hover_text {
                 ui.window("##hover_overlay")
                     .position([10.0, ui.io().display_size[1] - 80.0], imgui::Condition::Always)
-                    .size([250.0, 60.0], imgui::Condition::Always)
+                    .size([280.0, 60.0], imgui::Condition::Always)
                     .no_decoration()
                     .bg_alpha(0.9)
                     .build(|| {
-                        if is_selected {
-                            ui.text_colored([0.0, 1.0, 0.0, 1.0], &label);
-                        } else {
-                            ui.text_colored([1.0, 1.0, 0.0, 1.0], &label);
-                            ui.text_disabled("Click to select");
-                        }
+                        ui.text_colored([0.0, 1.0, 1.0, 1.0], hover_text); // Cyan for hologram
+                        ui.text_disabled("Click and drag to move");
                     });
+                return;
+            }
+        }
+
+        // In edit mode, show hover tooltip whenever hovering over an object
+        if game.game_manager.is_editing() {
+            if let Some(hovered_id) = game.object_picker.hovered_object {
+                if let Some(obj) = game.scene.get_object(hovered_id) {
+                    let is_selected = game.scene.selected_object_id() == Some(hovered_id);
+                    let label = if is_selected {
+                        format!("Selected: {}", obj.name)
+                    } else {
+                        format!("Hovering: {}", obj.name)
+                    };
+
+                    ui.window("##hover_overlay")
+                        .position([10.0, ui.io().display_size[1] - 80.0], imgui::Condition::Always)
+                        .size([250.0, 60.0], imgui::Condition::Always)
+                        .no_decoration()
+                        .bg_alpha(0.9)
+                        .build(|| {
+                            if is_selected {
+                                ui.text_colored([0.0, 1.0, 0.0, 1.0], &label);
+                            } else {
+                                ui.text_colored([1.0, 1.0, 0.0, 1.0], &label);
+                                ui.text_disabled("Click to select");
+                            }
+                        });
+                }
             }
         }
         // Selected object info is now shown in the Transform panel (top-right)
@@ -1071,10 +1089,8 @@ impl UiManager {
     pub fn build_ui(context: &mut Context, game: &mut Game, viewport_width: f32, viewport_height: f32) {
         let ui = context.frame();
 
-        // Show object hover/selection info overlay (edit mode only)
-        if game.game_manager.is_editing() {
-            Self::render_object_info(&ui, game);
-        }
+        // Show object hover/selection info overlay (edit mode and play mode)
+        Self::render_object_info(&ui, game);
 
         // Show notifications in lower right
         Self::render_notifications(&ui, game);

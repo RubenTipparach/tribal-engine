@@ -6,22 +6,25 @@ use crate::core::{RenderPass, RenderContext};
 use crate::mesh::Mesh;
 use crate::game::Game;
 
-/// Uniform buffer object for unlit shader (minimal - just camera matrices)
+/// Uniform buffer object for unlit shader (camera matrices + time for animation)
 #[repr(C)]
 #[derive(Copy, Clone)]
 struct UniformBufferObject {
     view: Mat4,
     proj: Mat4,
     view_pos: Vec3,
-    _padding: f32,
+    time: f32,
 }
 
-/// Push constants for unlit rendering (model matrix + color)
+/// Push constants for hologram rendering (model matrix + hologram parameters)
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct UnlitPushConstants {
     pub model: Mat4,
     pub color: Vec4,
+    pub fresnel_power: f32,
+    pub scanline_speed: f32,
+    pub _padding: [f32; 2],
 }
 
 pub struct UnlitPass {
@@ -251,14 +254,21 @@ impl RenderPass for UnlitPass {
 
             let depth_stencil = vk::PipelineDepthStencilStateCreateInfo::default()
                 .depth_test_enable(true)
-                .depth_write_enable(true)
+                .depth_write_enable(false) // Don't write to depth for transparent holograms
                 .depth_compare_op(vk::CompareOp::LESS)
                 .depth_bounds_test_enable(false)
                 .stencil_test_enable(false);
 
+            // Enable alpha blending for hologram transparency
             let color_blend_attachment = vk::PipelineColorBlendAttachmentState::default()
                 .color_write_mask(vk::ColorComponentFlags::RGBA)
-                .blend_enable(false);
+                .blend_enable(true)
+                .src_color_blend_factor(vk::BlendFactor::SRC_ALPHA)
+                .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
+                .color_blend_op(vk::BlendOp::ADD)
+                .src_alpha_blend_factor(vk::BlendFactor::ONE)
+                .dst_alpha_blend_factor(vk::BlendFactor::ZERO)
+                .alpha_blend_op(vk::BlendOp::ADD);
 
             let color_blending = vk::PipelineColorBlendStateCreateInfo::default()
                 .logic_op_enable(false)
@@ -295,13 +305,13 @@ impl RenderPass for UnlitPass {
 
     fn update(&mut self, ctx: &RenderContext, frame_index: usize, game: &Game) -> Result<()> {
         unsafe {
-            // Update uniform buffer with camera data
+            // Update uniform buffer with camera data and time
             let aspect_ratio = ctx.extent.width as f32 / ctx.extent.height as f32;
             let ubo = UniformBufferObject {
                 view: game.camera.view_matrix(),
                 proj: game.camera.projection_matrix(aspect_ratio),
                 view_pos: game.camera.position(),
-                _padding: 0.0,
+                time: game.time(),
             };
 
             let data = ctx.device.map_memory(
@@ -353,12 +363,17 @@ impl RenderPass for UnlitPass {
                                 obj.transform.position,
                             );
 
-                            // Cyan color for unlit objects (for testing)
-                            let color = glam::Vec4::new(0.0, 0.8, 1.0, 1.0);
+                            // Cyan holographic color with transparency
+                            let color = glam::Vec4::new(0.0, 0.8, 1.0, 0.6);
+                            let fresnel_power = 3.0; // Strong edge glow
+                            let scanline_speed = 2.0; // Medium animation speed
 
                             let push_constants = UnlitPushConstants {
                                 model: model_matrix,
                                 color,
+                                fresnel_power,
+                                scanline_speed,
+                                _padding: [0.0, 0.0],
                             };
 
                             ctx.device.cmd_push_constants(
@@ -392,6 +407,89 @@ impl RenderPass for UnlitPass {
                                     0,
                                     0,
                                 );
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Render hologram ship for movement planning (in play mode)
+            if game.game_manager.mode == crate::game_manager::GameMode::Play {
+                if let Some(hologram_pos) = game.hologram_ship_position {
+                    // Get the ship's mesh and rotation from ECS
+                    if let Some(fed_entity) = game.fed_cruiser_entity {
+                        if let Ok(mut query) = game.ecs_world.world.query_one::<(&crate::ecs::components::Rotation, &crate::ecs::components::Scale)>(fed_entity) {
+                            if let Some((rotation, scale)) = query.get() {
+                                if let Some(custom_meshes) = ctx.custom_meshes {
+                                    let mesh_path = "content/models/Fed_cruiser_ship.obj";
+                                    if let Some((_mesh, vertex_buffer, _vertex_memory, index_buffer, _index_memory)) = custom_meshes.get(mesh_path) {
+                                        // Create model matrix for hologram at planned position
+                                        let position = hologram_pos.as_vec3();
+                                        let rotation_quat = glam::Quat::from_xyzw(
+                                            rotation.0.x as f32,
+                                            rotation.0.y as f32,
+                                            rotation.0.z as f32,
+                                            rotation.0.w as f32,
+                                        );
+                                        let scale_vec = glam::Vec3::new(scale.0.x as f32, scale.0.y as f32, scale.0.z as f32);
+
+                                        let model_matrix = glam::Mat4::from_scale_rotation_translation(
+                                            scale_vec,
+                                            rotation_quat,
+                                            position,
+                                        );
+
+                                        // Change color when hovering (yellow) vs not hovering (cyan)
+                                        let color = if game.hovering_hologram {
+                                            glam::Vec4::new(1.0, 1.0, 0.0, 0.7) // Yellow when hovering
+                                        } else {
+                                            glam::Vec4::new(0.0, 0.8, 1.0, 0.6) // Cyan normally
+                                        };
+                                        let fresnel_power = 3.0; // Strong edge glow
+                                        let scanline_speed = 2.0; // Medium animation speed
+
+                                        let push_constants = UnlitPushConstants {
+                                            model: model_matrix,
+                                            color,
+                                            fresnel_power,
+                                            scanline_speed,
+                                            _padding: [0.0, 0.0],
+                                        };
+
+                                        ctx.device.cmd_push_constants(
+                                            command_buffer,
+                                            self.pipeline_layout,
+                                            vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                                            0,
+                                            bytemuck::bytes_of(&push_constants),
+                                        );
+
+                                        ctx.device.cmd_bind_vertex_buffers(
+                                            command_buffer,
+                                            0,
+                                            &[*vertex_buffer],
+                                            &[0],
+                                        );
+                                        ctx.device.cmd_bind_index_buffer(
+                                            command_buffer,
+                                            *index_buffer,
+                                            0,
+                                            vk::IndexType::UINT32,
+                                        );
+
+                                        // Get mesh from custom_meshes to know index count
+                                        if let Some((mesh, _, _, _, _)) = custom_meshes.get(mesh_path) {
+                                            ctx.device.cmd_draw_indexed(
+                                                command_buffer,
+                                                mesh.indices.len() as u32,
+                                                1,
+                                                0,
+                                                0,
+                                                0,
+                                            );
+                                        }
+                                    }
+                                }
                             }
                         }
                     }

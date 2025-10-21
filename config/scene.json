@@ -84,8 +84,8 @@
       "transform": {
         "position": [
           0.0,
-          3.0990639,
-          0.0
+          3.1118455,
+          -0.0101594925
         ],
         "rotation": [
           0.0,
@@ -169,9 +169,9 @@
           1.0
         ],
         "scale": [
-          50.0,
-          50.0,
-          50.0
+          500.0,
+          500.0,
+          500.0
         ]
       },
       "visible": true,
@@ -222,60 +222,6 @@
           1.0,
           1.0,
           1.0
-        ]
-      },
-      "visible": true,
-      "editor_only": false
-    },
-    {
-      "id": 9,
-      "name": "Test Hologram Ship",
-      "object_type": {
-        "Mesh": "content/models/Fed_cruiser_ship.obj"
-      },
-      "transform": {
-        "position": [
-          10.0,
-          3.0,
-          10.0
-        ],
-        "rotation": [
-          0.0,
-          0.0,
-          0.0,
-          1.0
-        ],
-        "scale": [
-          1.5,
-          1.5,
-          1.5
-        ]
-      },
-      "visible": true,
-      "editor_only": false
-    },
-    {
-      "id": 10,
-      "name": "Unlit Test Ship",
-      "object_type": {
-        "Unlit": "content/models/Fed_cruiser_ship.obj"
-      },
-      "transform": {
-        "position": [
-          -10.0,
-          3.0,
-          10.0
-        ],
-        "rotation": [
-          0.0,
-          0.0,
-          0.0,
-          1.0
-        ],
-        "scale": [
-          1.5,
-          1.5,
-          1.5
         ]
       },
       "visible": true,
