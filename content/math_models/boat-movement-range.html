@@ -663,6 +663,69 @@
             // Simulate path to this point
             const result = simulatePathToTarget(worldX, worldY, params);
             currentPath = result;
+
+            // Log the full path details for debugging
+            const pathDebug = {
+                initialConditions: {
+                    heading: params.initialHeading,
+                    velocityX: params.initialVx,
+                    velocityY: params.initialVy,
+                    maxAccel: params.maxAccel,
+                    maxDecel: params.maxDecel,
+                    maxSpeed: params.maxSpeed,
+                    maxTurnRate: params.maxTurnRate,
+                    timeLimit: params.timeLimit
+                },
+                target: {
+                    x: worldX,
+                    y: worldY
+                },
+                reachable: result.reached,
+                segments: result.path.map((segment, idx) => {
+                    const speed = Math.sqrt(segment.vx * segment.vx + segment.vy * segment.vy);
+                    const isValidSpeed = speed <= params.maxSpeed + 0.1;
+
+                    return {
+                        segmentIndex: idx,
+                        time: segment.t,
+                        position: {
+                            x: segment.x,
+                            y: segment.y
+                        },
+                        velocity: {
+                            x: segment.vx,
+                            y: segment.vy,
+                            magnitude: speed
+                        },
+                        heading: {
+                            radians: segment.heading,
+                            degrees: segment.heading * 180 / Math.PI
+                        },
+                        valid: isValidSpeed,
+                        validationDetails: {
+                            speedOk: isValidSpeed,
+                            speed: speed,
+                            maxSpeed: params.maxSpeed
+                        }
+                    };
+                }),
+                finalState: {
+                    position: {
+                        x: result.finalX,
+                        y: result.finalY
+                    },
+                    heading: {
+                        radians: result.finalHeading,
+                        degrees: result.finalHeading * 180 / Math.PI
+                    },
+                    distanceFromTarget: Math.sqrt(
+                        (result.targetX - result.finalX) * (result.targetX - result.finalX) +
+                        (result.targetY - result.finalY) * (result.targetY - result.finalY)
+                    )
+                }
+            };
+
+            console.log(JSON.stringify(pathDebug, null, 2));
             
             // Update status
             const status = document.getElementById('status');
@@ -695,44 +758,37 @@
             const centerX = canvas.width / 2;
             const centerY = canvas.height / 2;
             
-            // Draw path as segments with arcs
+            // Draw path as segments with bezier curves
             for (let i = 0; i < path.length - 1; i++) {
                 const x1 = centerX + path[i].x * scale + panX;
                 const y1 = centerY + path[i].y * scale + panY;
                 const x2 = centerX + path[i + 1].x * scale + panX;
                 const y2 = centerY + path[i + 1].y * scale + panY;
-                
-                // Calculate arc between segments
+
                 const heading1 = path[i].heading;
                 const heading2 = path[i + 1].heading;
-                const avgHeading = (heading1 + heading2) / 2;
-                
-                // Draw arc segment
+
+                // Draw bezier curve segment
                 ctx.strokeStyle = `rgba(65, 105, 225, ${0.7 - i * 0.3 / path.length})`;
                 ctx.lineWidth = 3;
                 ctx.beginPath();
-                
-                // Create arc path through intermediate points
-                const steps = 10;
-                for (let j = 0; j <= steps; j++) {
-                    const t = j / steps;
-                    // Interpolate position along arc
-                    const interX = x1 + (x2 - x1) * t;
-                    const interY = y1 + (y2 - y1) * t;
-                    
-                    // Add slight curve based on heading change
-                    const turnAmount = (heading2 - heading1);
-                    const curveOffset = Math.sin(t * Math.PI) * turnAmount * 10;
-                    const perpAngle = avgHeading + Math.PI / 2;
-                    const curveX = interX + Math.cos(perpAngle) * curveOffset;
-                    const curveY = interY + Math.sin(perpAngle) * curveOffset;
-                    
-                    if (j === 0) {
-                        ctx.moveTo(curveX, curveY);
-                    } else {
-                        ctx.lineTo(curveX, curveY);
-                    }
-                }
+                ctx.moveTo(x1, y1);
+
+                // Calculate control points based on headings
+                // The control point distance is proportional to segment length
+                const segmentDist = Math.sqrt((x2 - x1) * (x2 - x1) + (y2 - y1) * (y2 - y1));
+                const controlDist = segmentDist * 0.33; // Control points at 1/3 of segment length
+
+                // Control point 1: extends from point 1 in the direction of heading1
+                const cp1x = x1 + Math.cos(heading1) * controlDist;
+                const cp1y = y1 + Math.sin(heading1) * controlDist;
+
+                // Control point 2: extends backward from point 2 in the direction of heading2
+                const cp2x = x2 - Math.cos(heading2) * controlDist;
+                const cp2y = y2 - Math.sin(heading2) * controlDist;
+
+                // Draw cubic bezier curve
+                ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, x2, y2);
                 ctx.stroke();
                 
                 // Draw boat at this segment position
@@ -761,10 +817,21 @@
                     ctx.fillText(`Seg ${i}`, x1 + 10, y1 - 5);
                     ctx.font = '10px Arial';
                     ctx.fillText(`t=${path[i].t.toFixed(1)}s`, x1 + 10, y1 + 8);
-                    
+
                     // Calculate and show speed
                     const speed = Math.sqrt(path[i].vx * path[i].vx + path[i].vy * path[i].vy);
-                    ctx.fillStyle = 'rgba(255, 107, 107, 0.7)';
+                    const maxSpeed = parseFloat(document.getElementById('maxSpeed').value);
+
+                    // Check if segment is valid (speed doesn't exceed max)
+                    const isValid = speed <= maxSpeed + 0.1; // Small tolerance for floating point
+
+                    if (!isValid) {
+                        ctx.fillStyle = 'rgba(255, 0, 0, 0.9)';
+                        ctx.font = 'bold 12px Arial';
+                        ctx.fillText('INVALID', x1 + 10, y1 + 32);
+                    }
+
+                    ctx.fillStyle = isValid ? 'rgba(255, 107, 107, 0.7)' : 'rgba(255, 0, 0, 0.9)';
                     ctx.fillText(`${speed.toFixed(1)}m/s`, x1 + 10, y1 + 20);
                 }
                 
