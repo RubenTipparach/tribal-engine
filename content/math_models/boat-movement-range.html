@@ -225,6 +225,10 @@
             <div class="control-group">
                 <button onclick="endTurn()" id="endTurnBtn" disabled style="opacity: 0.5;">End Turn & Move Ship</button>
             </div>
+
+            <div class="control-group">
+                <button onclick="replayHistory()" id="replayBtn" disabled style="opacity: 0.5;">Replay All Moves</button>
+            </div>
         </div>
         
         <canvas id="canvas" width="800" height="800"></canvas>
@@ -280,6 +284,13 @@
         let isPanning = false;
         let lastMouseX = 0;
         let lastMouseY = 0;
+        let moveHistory = []; // Store all previous moves
+        let isAnimating = false;
+        let animationProgress = 0;
+        let isReplaying = false; // Track if we're in replay mode
+        let replayShipState = null; // State of the replay ghost ship
+        let shipWorldX = 0; // Ship's actual world position X
+        let shipWorldY = 0; // Ship's actual world position Y
         
         // Update display values
         document.getElementById('turningRange').addEventListener('input', (e) => {
@@ -318,30 +329,27 @@
                 initialVy,
                 pathTimeStep
             } = params;
-            
+
             // This function generates a segmented path that tries to reach the target
             // while respecting the 10-segment constraint
-            
+
             // Convert to radians
             const maxTurnRad = maxTurnRate * Math.PI / 180;
             const initialHeadingRad = initialHeading * Math.PI / 180;
-            
+
             // Number of segments (10 segments over the time interval)
             const numSegments = 10;
             const segmentTime = timeLimit / numSegments;
-            
-            // First, use the original canReachPoint to determine if target is actually reachable
-            const actuallyReachable = canReachPoint(targetX, targetY, params);
-            
+
             // Initialize position and velocity
             let x = 0, y = 0;
             let vx = initialVx, vy = initialVy;
             let heading = initialHeadingRad;
             let currentSpeed = Math.sqrt(vx * vx + vy * vy);
-            
+
             // Create path array
             const path = [{x, y, vx, vy, heading, t: 0}];
-            
+
             // For each segment, calculate optimal turn and speed to reach target
             for (let seg = 1; seg <= numSegments; seg++) {
                 // Calculate remaining time and current distance to target
@@ -349,26 +357,26 @@
                 const dx = targetX - x;
                 const dy = targetY - y;
                 const distToTarget = Math.sqrt(dx * dx + dy * dy);
-                
+
                 // Calculate desired heading to target
                 const desiredHeading = Math.atan2(dy, dx);
-                
+
                 // Calculate heading error
                 let headingError = desiredHeading - heading;
                 while (headingError > Math.PI) headingError -= 2 * Math.PI;
                 while (headingError < -Math.PI) headingError += 2 * Math.PI;
-                
+
                 // Calculate turn for this segment (limited by max turn rate)
                 const maxTurnThisSegment = maxTurnRad * segmentTime;
                 let turnThisSegment = headingError / (numSegments - seg + 1); // Distribute remaining turn
                 turnThisSegment = Math.max(-maxTurnThisSegment, Math.min(maxTurnThisSegment, turnThisSegment));
-                
+
                 // Update heading
                 heading += turnThisSegment;
-                
+
                 // Calculate desired speed to reach target in remaining time
                 let desiredSpeed = distToTarget / remainingTime;
-                
+
                 // Apply acceleration/deceleration constraints
                 if (desiredSpeed > currentSpeed) {
                     // Need to accelerate
@@ -385,19 +393,19 @@
                         0
                     );
                 }
-                
+
                 // Calculate distance traveled in this segment
                 const avgSpeed = currentSpeed;
                 const distance = avgSpeed * segmentTime;
-                
+
                 // Update position (move in current heading direction)
                 x += distance * Math.cos(heading);
                 y += distance * Math.sin(heading);
-                
+
                 // Update velocity components
                 vx = currentSpeed * Math.cos(heading);
                 vy = currentSpeed * Math.sin(heading);
-                
+
                 // Add to path
                 path.push({
                     x, y,
@@ -406,10 +414,15 @@
                     t: seg * segmentTime
                 });
             }
-            
+
             // Check final distance to target
             const finalDist = Math.sqrt((targetX - x) * (targetX - x) + (targetY - y) * (targetY - y));
-            
+
+            // Determine if target is reachable based on final distance
+            // Use a tolerance threshold - if we get within 5 meters, consider it reachable
+            const reachThreshold = 5.0;
+            const actuallyReachable = finalDist <= reachThreshold;
+
             return {
                 reached: actuallyReachable,
                 path: path,
@@ -417,110 +430,11 @@
                 finalX: x,
                 finalY: y,
                 targetX: targetX,
-                targetY: targetY
+                targetY: targetY,
+                finalDistance: finalDist
             };
         }
         
-        function canReachPoint(targetX, targetY, params) {
-            const {
-                maxAccel,
-                maxDecel,
-                maxSpeed,
-                maxTurnRate,
-                timeLimit,
-                initialHeading,
-                initialVx,
-                initialVy
-            } = params;
-            
-            // Original reachability logic - unchanged
-            const maxTurnRad = maxTurnRate * Math.PI / 180;
-            const initialHeadingRad = initialHeading * Math.PI / 180;
-            
-            // Calculate distance and angle to target
-            const distance = Math.sqrt(targetX * targetX + targetY * targetY);
-            const targetAngle = Math.atan2(targetY, targetX);
-            
-            // Quick check: can we reach this distance in time?
-            const timeToMaxSpeed = maxSpeed / maxAccel;
-            let maxDistance;
-            
-            if (timeToMaxSpeed >= timeLimit) {
-                maxDistance = 0.5 * maxAccel * timeLimit * timeLimit;
-            } else {
-                const distanceAccelerating = 0.5 * maxAccel * timeToMaxSpeed * timeToMaxSpeed;
-                const remainingTime = timeLimit - timeToMaxSpeed;
-                maxDistance = distanceAccelerating + maxSpeed * remainingTime;
-            }
-            
-            if (distance > maxDistance * 1.2) {
-                return false;
-            }
-            
-            // Check turning constraint
-            let angleDiff = targetAngle - initialHeadingRad;
-            while (angleDiff > Math.PI) angleDiff -= 2 * Math.PI;
-            while (angleDiff < -Math.PI) angleDiff += 2 * Math.PI;
-            
-            const minTurnTime = Math.abs(angleDiff) / maxTurnRad;
-            
-            if (minTurnTime > timeLimit) {
-                return false;
-            }
-            
-            // More sophisticated check: simulate a simple trajectory
-            const dt = 0.1;
-            let t = 0;
-            let x = 0, y = 0;
-            let vx = initialVx, vy = initialVy;
-            let heading = initialHeadingRad;
-            
-            while (t < timeLimit) {
-                const dx = targetX - x;
-                const dy = targetY - y;
-                const distToTarget = Math.sqrt(dx * dx + dy * dy);
-                
-                if (distToTarget < 2) {
-                    return true;
-                }
-                
-                const desiredHeading = Math.atan2(dy, dx);
-                let headingError = desiredHeading - heading;
-                while (headingError > Math.PI) headingError -= 2 * Math.PI;
-                while (headingError < -Math.PI) headingError += 2 * Math.PI;
-                
-                const turnRate = Math.max(-maxTurnRad, Math.min(maxTurnRad, headingError / dt));
-                heading += turnRate * dt;
-                
-                const speed = Math.sqrt(vx * vx + vy * vy);
-                const stoppingDist = speed * speed / (2 * maxDecel);
-                
-                let accel;
-                if (distToTarget > stoppingDist + 5 && speed < maxSpeed) {
-                    accel = maxAccel;
-                } else if (distToTarget < stoppingDist) {
-                    accel = -maxDecel;
-                } else {
-                    accel = 0;
-                }
-                
-                vx += accel * Math.cos(heading) * dt;
-                vy += accel * Math.sin(heading) * dt;
-                
-                const newSpeed = Math.sqrt(vx * vx + vy * vy);
-                if (newSpeed > maxSpeed) {
-                    vx = vx * maxSpeed / newSpeed;
-                    vy = vy * maxSpeed / newSpeed;
-                }
-                
-                x += vx * dt;
-                y += vy * dt;
-                t += dt;
-            }
-            
-            const finalDist = Math.sqrt((targetX - x) * (targetX - x) + (targetY - y) * (targetY - y));
-            return finalDist < 5;
-        }
         
         function handleZoom(event) {
             event.preventDefault();
@@ -648,8 +562,9 @@
             const centerX = canvas.width / 2;
             const centerY = canvas.height / 2;
 
-            const worldX = (clickX - centerX - panX) / scale;
-            const worldY = (clickY - centerY - panY) / scale;
+            // Calculate world position relative to ship's current position
+            const worldX = (clickX - centerX - panX) / scale - shipWorldX;
+            const worldY = (clickY - centerY - panY) / scale - shipWorldY;
             
             // Get parameters
             const params = {
@@ -722,10 +637,9 @@
                         radians: result.finalHeading,
                         degrees: result.finalHeading * 180 / Math.PI
                     },
-                    distanceFromTarget: Math.sqrt(
-                        (result.targetX - result.finalX) * (result.targetX - result.finalX) +
-                        (result.targetY - result.finalY) * (result.targetY - result.finalY)
-                    )
+                    distanceFromTarget: result.finalDistance,
+                    reachThreshold: 5.0,
+                    withinThreshold: result.finalDistance <= 5.0
                 }
             };
 
@@ -758,8 +672,9 @@
             drawGrid();
 
             // Convert world coordinates back to screen for drawing target
-            const targetScreenX = centerX + worldX * scale + panX;
-            const targetScreenY = centerY + worldY * scale + panY;
+            // worldX/worldY are relative to ship, so add shipWorldX/Y to get absolute position
+            const targetScreenX = centerX + (shipWorldX + worldX) * scale + panX;
+            const targetScreenY = centerY + (shipWorldY + worldY) * scale + panY;
             drawTarget(targetScreenX, targetScreenY, result.reached);
 
             if (result.reached) {
@@ -771,13 +686,14 @@
         function drawPath(path) {
             const centerX = canvas.width / 2;
             const centerY = canvas.height / 2;
-            
+
             // Draw path as segments with bezier curves
+            // Path coordinates are relative to ship, so add shipWorldX/Y
             for (let i = 0; i < path.length - 1; i++) {
-                const x1 = centerX + path[i].x * scale + panX;
-                const y1 = centerY + path[i].y * scale + panY;
-                const x2 = centerX + path[i + 1].x * scale + panX;
-                const y2 = centerY + path[i + 1].y * scale + panY;
+                const x1 = centerX + (shipWorldX + path[i].x) * scale + panX;
+                const y1 = centerY + (shipWorldY + path[i].y) * scale + panY;
+                const x2 = centerX + (shipWorldX + path[i + 1].x) * scale + panX;
+                const y2 = centerY + (shipWorldY + path[i + 1].y) * scale + panY;
 
                 const heading1 = path[i].heading;
                 const heading2 = path[i + 1].heading;
@@ -884,8 +800,9 @@
             const centerX = canvas.width / 2;
             const centerY = canvas.height / 2;
 
-            const screenX = centerX + x * scale + panX;
-            const screenY = centerY + y * scale + panY;
+            // x, y are relative to ship position, so add shipWorldX/Y
+            const screenX = centerX + (shipWorldX + x) * scale + panX;
+            const screenY = centerY + (shipWorldY + y) * scale + panY;
             
             ctx.save();
             ctx.translate(screenX, screenY);
@@ -968,10 +885,12 @@
             if (gridCalculated) {
                 for (let key in gridResults) {
                     const [i, j] = key.split(',').map(Number);
-                    const worldX = (i - gridDensity / 2) * gridStep;
-                    const worldY = (j - gridDensity / 2) * gridStep;
-                    const screenX = centerX + worldX * scale + panX;
-                    const screenY = centerY + worldY * scale + panY;
+                    // Calculate relative position from ship
+                    const relativeX = (i - gridDensity / 2) * gridStep;
+                    const relativeY = (j - gridDensity / 2) * gridStep;
+                    // Convert to absolute world position then to screen
+                    const screenX = centerX + (shipWorldX + relativeX) * scale + panX;
+                    const screenY = centerY + (shipWorldY + relativeY) * scale + panY;
 
                     // Only draw if on screen
                     if (screenX >= -10 && screenX <= canvas.width + 10 &&
@@ -990,7 +909,7 @@
             const initialVy = parseFloat(document.getElementById('initialVy').value);
 
             ctx.save();
-            ctx.translate(centerX + panX, centerY + panY);
+            ctx.translate(centerX + shipWorldX * scale + panX, centerY + shipWorldY * scale + panY);
             ctx.rotate(initialHeading * Math.PI / 180);
             
             // Draw boat triangle
@@ -1020,7 +939,7 @@
             // Draw velocity vector if non-zero
             if (initialVx !== 0 || initialVy !== 0) {
                 ctx.save();
-                ctx.translate(centerX + panX, centerY + panY);
+                ctx.translate(centerX + shipWorldX * scale + panX, centerY + shipWorldY * scale + panY);
 
                 const vMag = Math.sqrt(initialVx * initialVx + initialVy * initialVy);
                 const vAngle = Math.atan2(initialVy, initialVx);
@@ -1050,45 +969,250 @@
                 // Label velocity
                 ctx.fillStyle = '#FF6B6B';
                 ctx.font = 'bold 12px Arial';
-                ctx.fillText(`V₀ = ${vMag.toFixed(1)} m/s`, centerX + panX + 20, centerY + panY - 20);
+                ctx.fillText(`V₀ = ${vMag.toFixed(1)} m/s`, centerX + shipWorldX * scale + panX + 20, centerY + shipWorldY * scale + panY - 20);
             }
 
-            // Draw center marker
+            // Draw center marker at ship position
             ctx.fillStyle = '#333';
             ctx.beginPath();
-            ctx.arc(centerX + panX, centerY + panY, 4, 0, Math.PI * 2);
+            ctx.arc(centerX + shipWorldX * scale + panX, centerY + shipWorldY * scale + panY, 4, 0, Math.PI * 2);
             ctx.fill();
+
+            // Draw all previous moves as a continuous green line
+            drawMoveHistory();
         }
-        
-        function endTurn() {
-            if (!currentPath || !currentPath.reached) {
+
+        function drawMoveHistory() {
+            if (moveHistory.length === 0) {
                 return;
             }
 
-            // Get the final segment (last element in the path)
-            const finalSegment = currentPath.path[currentPath.path.length - 1];
-
-            // Update ship position to final position
-            // We need to adjust pan to center on the new position
             const centerX = canvas.width / 2;
             const centerY = canvas.height / 2;
 
-            // Calculate how much to pan to keep the ship centered
-            const currentShipScreenX = centerX + panX;
-            const currentShipScreenY = centerY + panY;
-            const newShipScreenX = centerX + finalSegment.x * scale + panX;
-            const newShipScreenY = centerY + finalSegment.y * scale + panY;
+            ctx.strokeStyle = 'rgba(0, 200, 0, 0.6)';
+            ctx.lineWidth = 4;
 
-            // Adjust pan so new position becomes origin (0,0) in world space
-            panX = panX - finalSegment.x * scale;
-            panY = panY - finalSegment.y * scale;
+            // Track cumulative world position for drawing the path
+            let cumulativeWorldX = 0;
+            let cumulativeWorldY = 0;
+
+            for (let moveIndex = 0; moveIndex < moveHistory.length; moveIndex++) {
+                const move = moveHistory[moveIndex];
+                const path = move.path;
+
+                // Draw this move's path
+                for (let i = 0; i < path.length - 1; i++) {
+                    const x1 = centerX + (cumulativeWorldX + path[i].x) * scale + panX;
+                    const y1 = centerY + (cumulativeWorldY + path[i].y) * scale + panY;
+                    const x2 = centerX + (cumulativeWorldX + path[i + 1].x) * scale + panX;
+                    const y2 = centerY + (cumulativeWorldY + path[i + 1].y) * scale + panY;
+
+                    const heading1 = path[i].heading;
+                    const heading2 = path[i + 1].heading;
+
+                    const segmentDist = Math.sqrt((x2 - x1) * (x2 - x1) + (y2 - y1) * (y2 - y1));
+                    const controlDist = segmentDist * 0.33;
+
+                    const cp1x = x1 + Math.cos(heading1) * controlDist;
+                    const cp1y = y1 + Math.sin(heading1) * controlDist;
+                    const cp2x = x2 - Math.cos(heading2) * controlDist;
+                    const cp2y = y2 - Math.sin(heading2) * controlDist;
+
+                    ctx.beginPath();
+                    ctx.moveTo(x1, y1);
+                    ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, x2, y2);
+                    ctx.stroke();
+                }
+
+                // Update cumulative world position for next move
+                const finalSegment = path[path.length - 1];
+                cumulativeWorldX += finalSegment.x;
+                cumulativeWorldY += finalSegment.y;
+            }
+        }
+        
+        function endTurn() {
+            if (!currentPath || !currentPath.reached || isAnimating) {
+                return;
+            }
+
+            // Store the move in history before executing it
+            const moveRecord = {
+                path: JSON.parse(JSON.stringify(currentPath.path)), // Deep copy
+                startPanX: panX,
+                startPanY: panY,
+                targetX: currentPath.targetX,
+                targetY: currentPath.targetY
+            };
+            moveHistory.push(moveRecord);
+
+            // Enable replay button
+            const replayBtn = document.getElementById('replayBtn');
+            replayBtn.disabled = false;
+            replayBtn.style.opacity = '1';
+
+            // Animate the move
+            animateMove(currentPath.path);
+        }
+
+        function animateMove(path) {
+            isAnimating = true;
+            animationProgress = 0;
+
+            const finalSegment = path[path.length - 1];
+
+            const animationDuration = 2000; // 2 seconds
+            const startTime = Date.now();
+
+            // Disable buttons during animation
+            const endTurnBtn = document.getElementById('endTurnBtn');
+            endTurnBtn.disabled = true;
+            endTurnBtn.style.opacity = '0.5';
+
+            function animate() {
+                const elapsed = Date.now() - startTime;
+                const progress = Math.min(elapsed / animationDuration, 1);
+
+                // Easing function (ease-in-out)
+                const eased = progress < 0.5
+                    ? 2 * progress * progress
+                    : 1 - Math.pow(-2 * progress + 2, 2) / 2;
+
+                animationProgress = eased;
+
+                // Draw current state
+                drawGrid();
+                drawAnimatedPath(path, eased);
+
+                if (progress < 1) {
+                    requestAnimationFrame(animate);
+                } else {
+                    // Animation complete
+                    isAnimating = false;
+                    animationProgress = 0;
+                    completeMove(finalSegment);
+                }
+            }
+
+            animate();
+        }
+
+        function drawAnimatedPath(path, progress) {
+            // Determine which segment we're currently in
+            const totalSegments = path.length - 1;
+            const currentSegmentFloat = progress * totalSegments;
+            const currentSegmentIndex = Math.floor(currentSegmentFloat);
+            const segmentProgress = currentSegmentFloat - currentSegmentIndex;
+
+            const centerX = canvas.width / 2;
+            const centerY = canvas.height / 2;
+
+            // Draw completed segments
+            for (let i = 0; i < Math.min(currentSegmentIndex, totalSegments); i++) {
+                const x1 = centerX + (shipWorldX + path[i].x) * scale + panX;
+                const y1 = centerY + (shipWorldY + path[i].y) * scale + panY;
+                const x2 = centerX + (shipWorldX + path[i + 1].x) * scale + panX;
+                const y2 = centerY + (shipWorldY + path[i + 1].y) * scale + panY;
+
+                const heading1 = path[i].heading;
+                const heading2 = path[i + 1].heading;
+
+                const segmentDist = Math.sqrt((x2 - x1) * (x2 - x1) + (y2 - y1) * (y2 - y1));
+                const controlDist = segmentDist * 0.33;
+
+                const cp1x = x1 + Math.cos(heading1) * controlDist;
+                const cp1y = y1 + Math.sin(heading1) * controlDist;
+                const cp2x = x2 - Math.cos(heading2) * controlDist;
+                const cp2y = y2 - Math.sin(heading2) * controlDist;
+
+                ctx.strokeStyle = 'rgba(65, 105, 225, 0.7)';
+                ctx.lineWidth = 3;
+                ctx.beginPath();
+                ctx.moveTo(x1, y1);
+                ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, x2, y2);
+                ctx.stroke();
+            }
+
+            // Draw current segment in progress
+            if (currentSegmentIndex < totalSegments) {
+                const i = currentSegmentIndex;
+                const x1 = centerX + (shipWorldX + path[i].x) * scale + panX;
+                const y1 = centerY + (shipWorldY + path[i].y) * scale + panY;
+                const x2 = centerX + (shipWorldX + path[i + 1].x) * scale + panX;
+                const y2 = centerY + (shipWorldY + path[i + 1].y) * scale + panY;
+
+                const heading1 = path[i].heading;
+                const heading2 = path[i + 1].heading;
+
+                const segmentDist = Math.sqrt((x2 - x1) * (x2 - x1) + (y2 - y1) * (y2 - y1));
+                const controlDist = segmentDist * 0.33;
+
+                const cp1x = x1 + Math.cos(heading1) * controlDist;
+                const cp1y = y1 + Math.sin(heading1) * controlDist;
+                const cp2x = x2 - Math.cos(heading2) * controlDist;
+                const cp2y = y2 - Math.sin(heading2) * controlDist;
+
+                // Draw partial bezier curve
+                ctx.strokeStyle = 'rgba(65, 105, 225, 0.7)';
+                ctx.lineWidth = 3;
+                ctx.beginPath();
+                ctx.moveTo(x1, y1);
+
+                // Sample bezier curve and draw up to current progress
+                const steps = 20;
+                for (let j = 0; j <= steps * segmentProgress; j++) {
+                    const t = j / steps;
+                    const mt = 1 - t;
+                    const bx = mt * mt * mt * x1 + 3 * mt * mt * t * cp1x + 3 * mt * t * t * cp2x + t * t * t * x2;
+                    const by = mt * mt * mt * y1 + 3 * mt * mt * t * cp1y + 3 * mt * t * t * cp2y + t * t * t * y2;
+                    ctx.lineTo(bx, by);
+                }
+                ctx.stroke();
+
+                // Calculate boat position along the bezier curve
+                const t = segmentProgress;
+                const mt = 1 - t;
+                const boatX = mt * mt * mt * x1 + 3 * mt * mt * t * cp1x + 3 * mt * t * t * cp2x + t * t * t * x2;
+                const boatY = mt * mt * mt * y1 + 3 * mt * mt * t * cp1y + 3 * mt * t * t * cp2y + t * t * t * y2;
+
+                // Interpolate heading
+                const boatHeading = heading1 + (heading2 - heading1) * segmentProgress;
+
+                // Draw animated boat
+                ctx.save();
+                ctx.translate(boatX, boatY);
+                ctx.rotate(boatHeading);
+
+                ctx.fillStyle = '#FFD700';
+                ctx.strokeStyle = '#333';
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.moveTo(15, 0);
+                ctx.lineTo(-10, -8);
+                ctx.lineTo(-10, 8);
+                ctx.closePath();
+                ctx.fill();
+                ctx.stroke();
+
+                ctx.restore();
+            }
+        }
+
+        function completeMove(finalSegment) {
+            // Update ship's world position
+            shipWorldX += finalSegment.x;
+            shipWorldY += finalSegment.y;
 
             // Update initial velocity to final velocity
             document.getElementById('initialVx').value = finalSegment.vx.toFixed(2);
             document.getElementById('initialVy').value = finalSegment.vy.toFixed(2);
 
             // Update initial heading to final heading
-            const finalHeadingDegrees = (finalSegment.heading * 180 / Math.PI) % 360;
+            let finalHeadingDegrees = (finalSegment.heading * 180 / Math.PI);
+            // Normalize to 0-360 range
+            while (finalHeadingDegrees < 0) finalHeadingDegrees += 360;
+            while (finalHeadingDegrees >= 360) finalHeadingDegrees -= 360;
             document.getElementById('initialAngle').value = Math.round(finalHeadingDegrees);
             document.getElementById('angleDisplay').textContent = Math.round(finalHeadingDegrees) + '°';
 
@@ -1096,11 +1220,6 @@
             currentPath = null;
             gridCalculated = false;
             gridResults = {};
-
-            // Disable end turn button
-            const endTurnBtn = document.getElementById('endTurnBtn');
-            endTurnBtn.disabled = true;
-            endTurnBtn.style.opacity = '0.5';
 
             // Update status
             const status = document.getElementById('status');
@@ -1112,10 +1231,202 @@
             drawGrid();
 
             console.log('Turn ended. New ship state:', {
-                position: { x: 0, y: 0 }, // Ship is now at origin in world space
+                position: { x: shipWorldX, y: shipWorldY },
                 velocity: { x: finalSegment.vx, y: finalSegment.vy },
-                heading: { radians: finalSegment.heading, degrees: finalHeadingDegrees }
+                heading: { radians: finalSegment.heading, degrees: finalHeadingDegrees },
+                totalMoves: moveHistory.length
             });
+        }
+
+        function replayHistory() {
+            if (moveHistory.length === 0 || isAnimating) {
+                return;
+            }
+
+            console.log('Replaying all moves:', moveHistory);
+
+            isReplaying = true;
+
+            // Disable buttons
+            const replayBtn = document.getElementById('replayBtn');
+            replayBtn.disabled = true;
+            replayBtn.style.opacity = '0.5';
+
+            // Animate each move in sequence
+            let currentMoveIndex = 0;
+
+            function playNextMove() {
+                if (currentMoveIndex >= moveHistory.length) {
+                    // All moves replayed
+                    isReplaying = false;
+                    replayShipState = null;
+                    replayBtn.disabled = false;
+                    replayBtn.style.opacity = '1';
+                    drawGrid();
+                    console.log('Replay complete!');
+                    return;
+                }
+
+                const move = moveHistory[currentMoveIndex];
+                currentMoveIndex++;
+
+                // Initialize replay ship state for this move
+                replayShipState = {
+                    currentPath: move.path,
+                    progress: 0,
+                    cumulativeWorldX: 0,
+                    cumulativeWorldY: 0
+                };
+
+                // Calculate cumulative world position up to this move
+                for (let i = 0; i < currentMoveIndex - 1; i++) {
+                    const prevMove = moveHistory[i];
+                    const prevFinalSegment = prevMove.path[prevMove.path.length - 1];
+                    replayShipState.cumulativeWorldX += prevFinalSegment.x;
+                    replayShipState.cumulativeWorldY += prevFinalSegment.y;
+                }
+
+                // Animate this move
+                isAnimating = true;
+                const animationDuration = 2000;
+                const startTime = Date.now();
+
+                function animate() {
+                    const elapsed = Date.now() - startTime;
+                    const progress = Math.min(elapsed / animationDuration, 1);
+
+                    const eased = progress < 0.5
+                        ? 2 * progress * progress
+                        : 1 - Math.pow(-2 * progress + 2, 2) / 2;
+
+                    replayShipState.progress = eased;
+
+                    drawGrid();
+                    drawReplayShip();
+
+                    if (progress < 1) {
+                        requestAnimationFrame(animate);
+                    } else {
+                        // This move complete
+                        isAnimating = false;
+
+                        // Wait a bit then play next move
+                        setTimeout(playNextMove, 500);
+                    }
+                }
+
+                animate();
+            }
+
+            playNextMove();
+        }
+
+        function drawReplayShip() {
+            if (!replayShipState || !replayShipState.currentPath) {
+                return;
+            }
+
+            const path = replayShipState.currentPath;
+            const progress = replayShipState.progress;
+
+            // Determine which segment we're currently in
+            const totalSegments = path.length - 1;
+            const currentSegmentFloat = progress * totalSegments;
+            const currentSegmentIndex = Math.floor(currentSegmentFloat);
+            const segmentProgress = currentSegmentFloat - currentSegmentIndex;
+
+            const centerX = canvas.width / 2;
+            const centerY = canvas.height / 2;
+
+            // Draw completed segments of current move
+            for (let i = 0; i < Math.min(currentSegmentIndex, totalSegments); i++) {
+                const x1 = centerX + (replayShipState.cumulativeWorldX + path[i].x) * scale + panX;
+                const y1 = centerY + (replayShipState.cumulativeWorldY + path[i].y) * scale + panY;
+                const x2 = centerX + (replayShipState.cumulativeWorldX + path[i + 1].x) * scale + panX;
+                const y2 = centerY + (replayShipState.cumulativeWorldY + path[i + 1].y) * scale + panY;
+
+                const heading1 = path[i].heading;
+                const heading2 = path[i + 1].heading;
+
+                const segmentDist = Math.sqrt((x2 - x1) * (x2 - x1) + (y2 - y1) * (y2 - y1));
+                const controlDist = segmentDist * 0.33;
+
+                const cp1x = x1 + Math.cos(heading1) * controlDist;
+                const cp1y = y1 + Math.sin(heading1) * controlDist;
+                const cp2x = x2 - Math.cos(heading2) * controlDist;
+                const cp2y = y2 - Math.sin(heading2) * controlDist;
+
+                ctx.strokeStyle = 'rgba(255, 165, 0, 0.7)'; // Orange for replay
+                ctx.lineWidth = 3;
+                ctx.beginPath();
+                ctx.moveTo(x1, y1);
+                ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, x2, y2);
+                ctx.stroke();
+            }
+
+            // Draw current segment in progress
+            if (currentSegmentIndex < totalSegments) {
+                const i = currentSegmentIndex;
+                const x1 = centerX + (replayShipState.cumulativeWorldX + path[i].x) * scale + panX;
+                const y1 = centerY + (replayShipState.cumulativeWorldY + path[i].y) * scale + panY;
+                const x2 = centerX + (replayShipState.cumulativeWorldX + path[i + 1].x) * scale + panX;
+                const y2 = centerY + (replayShipState.cumulativeWorldY + path[i + 1].y) * scale + panY;
+
+                const heading1 = path[i].heading;
+                const heading2 = path[i + 1].heading;
+
+                const segmentDist = Math.sqrt((x2 - x1) * (x2 - x1) + (y2 - y1) * (y2 - y1));
+                const controlDist = segmentDist * 0.33;
+
+                const cp1x = x1 + Math.cos(heading1) * controlDist;
+                const cp1y = y1 + Math.sin(heading1) * controlDist;
+                const cp2x = x2 - Math.cos(heading2) * controlDist;
+                const cp2y = y2 - Math.sin(heading2) * controlDist;
+
+                // Draw partial bezier curve
+                ctx.strokeStyle = 'rgba(255, 165, 0, 0.7)';
+                ctx.lineWidth = 3;
+                ctx.beginPath();
+                ctx.moveTo(x1, y1);
+
+                // Sample bezier curve and draw up to current progress
+                const steps = 20;
+                for (let j = 0; j <= steps * segmentProgress; j++) {
+                    const t = j / steps;
+                    const mt = 1 - t;
+                    const bx = mt * mt * mt * x1 + 3 * mt * mt * t * cp1x + 3 * mt * t * t * cp2x + t * t * t * x2;
+                    const by = mt * mt * mt * y1 + 3 * mt * mt * t * cp1y + 3 * mt * t * t * cp2y + t * t * t * y2;
+                    ctx.lineTo(bx, by);
+                }
+                ctx.stroke();
+
+                // Calculate boat position along the bezier curve
+                const t = segmentProgress;
+                const mt = 1 - t;
+                const boatX = mt * mt * mt * x1 + 3 * mt * mt * t * cp1x + 3 * mt * t * t * cp2x + t * t * t * x2;
+                const boatY = mt * mt * mt * y1 + 3 * mt * mt * t * cp1y + 3 * mt * t * t * cp2y + t * t * t * y2;
+
+                // Interpolate heading
+                const boatHeading = heading1 + (heading2 - heading1) * segmentProgress;
+
+                // Draw replay ghost boat (orange/transparent)
+                ctx.save();
+                ctx.translate(boatX, boatY);
+                ctx.rotate(boatHeading);
+
+                ctx.fillStyle = 'rgba(255, 165, 0, 0.7)';
+                ctx.strokeStyle = 'rgba(200, 100, 0, 0.9)';
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.moveTo(15, 0);
+                ctx.lineTo(-10, -8);
+                ctx.lineTo(-10, 8);
+                ctx.closePath();
+                ctx.fill();
+                ctx.stroke();
+
+                ctx.restore();
+            }
         }
 
         function calculate() {
@@ -1146,13 +1457,15 @@
             const gridStep = worldGridSize / gridDensity;
 
             // Calculate reachability for each grid point
+            // Grid points are calculated relative to ship's current position
             gridResults = {};
             for (let i = 0; i <= gridDensity; i++) {
                 for (let j = 0; j <= gridDensity; j++) {
-                    const worldX = (i - gridDensity / 2) * gridStep;
-                    const worldY = (j - gridDensity / 2) * gridStep;
-                    
-                    const result = simulatePathToTarget(worldX, worldY, params);
+                    // Calculate relative position from ship
+                    const relativeX = (i - gridDensity / 2) * gridStep;
+                    const relativeY = (j - gridDensity / 2) * gridStep;
+
+                    const result = simulatePathToTarget(relativeX, relativeY, params);
                     gridResults[`${i},${j}`] = result.reached;
                 }
             }
