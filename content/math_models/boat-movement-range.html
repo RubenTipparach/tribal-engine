@@ -783,8 +783,8 @@
             
             // Highlight segment endpoints with circles
             for (let i = 0; i < path.length; i++) {
-                const x = centerX + path[i].x * scale + panX;
-                const y = centerY + path[i].y * scale + panY;
+                const x = centerX + (shipWorldX + path[i].x) * scale + panX;
+                const y = centerY + (shipWorldY + path[i].y) * scale + panY;
                 
                 ctx.fillStyle = 'rgba(65, 105, 225, 0.3)';
                 ctx.strokeStyle = 'rgba(65, 105, 225, 0.8)';
@@ -883,6 +883,7 @@
             
             // Draw grid points if calculated
             if (gridCalculated) {
+                let debugCount = 0;
                 for (let key in gridResults) {
                     const [i, j] = key.split(',').map(Number);
                     // Calculate relative position from ship
@@ -891,6 +892,20 @@
                     // Convert to absolute world position then to screen
                     const screenX = centerX + (shipWorldX + relativeX) * scale + panX;
                     const screenY = centerY + (shipWorldY + relativeY) * scale + panY;
+
+                    if (debugCount === 0) {
+                        // console.log('Grid dot debug:', {
+                        //     key,
+                        //     i, j,
+                        //     gridDensity,
+                        //     gridStep,
+                        //     relativeX, relativeY,
+                        //     shipWorldX, shipWorldY,
+                        //     scale, panX, panY,
+                        //     screenX, screenY
+                        // });
+                        debugCount++;
+                    }
 
                     // Only draw if on screen
                     if (screenX >= -10 && screenX <= canvas.width + 10 &&
