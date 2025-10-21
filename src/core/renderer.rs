@@ -712,7 +712,7 @@ impl VulkanRenderer {
             render_passes.register(Box::new(crate::core::passes::NebulaPass::new()));
             render_passes.register(Box::new(crate::core::passes::MeshPass::new()));
             render_passes.register(Box::new(crate::core::passes::StarPass::new(MAX_FRAMES_IN_FLIGHT)));
-            render_passes.register(Box::new(crate::core::passes::HolographicPass::new()));
+            render_passes.register(Box::new(crate::core::passes::UnlitPass::new()));
             render_passes.register(Box::new(crate::core::passes::OutlinePass::new()));
             render_passes.register(Box::new(crate::core::passes::LinePass::new(10000))); // 10k vertex capacity
 
